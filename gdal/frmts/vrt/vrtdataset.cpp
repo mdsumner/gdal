@@ -987,14 +987,18 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
     // Parse query string
     CPLStringList aosTokens(CSLTokenizeString2(osQueryString, "&", 0));
     std::vector<int> anBands;
+    std::vector<double> anExtent;
+
     for( int i = 0; i < aosTokens.size(); i++ )
     {
         char* pszKey = nullptr;
         const char* pszValue = CPLParseNameValue(aosTokens[i], &pszKey);
+        int optfound = 0;
         if( pszKey && pszValue )
         {
             if( EQUAL(pszKey, "bands") )
             {
+                optfound += 1;
                 CPLStringList aosBands(CSLTokenizeString2(pszValue, ",", 0));
                 for( int j = 0; j < aosBands.size(); j++ )
                 {
@@ -1008,7 +1012,7 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
                         if( nBand <= 0 || nBand > poSrcDS->GetRasterCount() )
                         {
                             CPLError(CE_Failure, CPLE_IllegalArg,
-                                    "Invalid band number: %s", aosBands[j]);
+                                     "Invalid band number: %s", aosBands[j]);
                             poSrcDS->ReleaseRef();
                             CPLFree(pszKey);
                             return nullptr;
@@ -1017,7 +1021,38 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
                     }
                 }
             }
-            else
+            if( EQUAL(pszKey, "a_ullr") )
+            {
+                optfound += 1;
+                CPLStringList aosExtent(CSLTokenizeString2(pszValue, ",", 0));
+                if (aosExtent.size() != 4)  {
+                    CPLError(CE_Failure, CPLE_IllegalArg,
+                             "Invalid a_ullr elements, must be 4 values");
+                }
+                for( int j = 0; j < 4; j++ )
+                {
+                    anExtent.push_back(atof(aosExtent[j]));
+                }
+
+                if( anExtent[3] >= anExtent[1] )
+                {
+                    CPLError(CE_Failure, CPLE_IllegalArg,
+                             "Invalid ymin,ymax values for a_ullr, require 'a_ullr=xmin,ymax,xmax,ymin' ");
+                    poSrcDS->ReleaseRef();
+                    CPLFree(pszKey);
+                    return nullptr;
+                }
+
+                if( anExtent[2] <= anExtent[0] )
+                {
+                    CPLError(CE_Failure, CPLE_IllegalArg,
+                             "Invalid xmin,xmax values for a_ullr, require 'a_ullr=xmin,ymax,xmax,ymin' ");
+                    poSrcDS->ReleaseRef();
+                    CPLFree(pszKey);
+                    return nullptr;
+                }
+            }
+            if (!optfound)
             {
                 CPLError(CE_Failure, CPLE_NotSupported,
                          "Unknown option: %s", pszKey);
@@ -1037,6 +1072,14 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
     {
         argv.AddString("-b");
         argv.AddString(nBand == 0 ? "mask" : CPLSPrintf("%d", nBand));
+    }
+
+    int limcount = 0;
+    for( const double nLim: anExtent )
+    {
+        if (limcount == 0) argv.AddString("-a_ullr");
+        limcount = limcount + 1;
+        argv.AddString(CPLSPrintf("%f", nLim));
     }
 
     GDALTranslateOptions* psOptions = GDALTranslateOptionsNew(argv.List(), nullptr);
@@ -1170,7 +1213,7 @@ CPLErr VRTDataset::AddBand( GDALDataType eType, char **papszOptions )
             nPixelOffset = atoi(pszPixelOffset);
 
         int nLineOffset;
-        const char* pszLineOffset = 
+        const char* pszLineOffset =
                                 CSLFetchNameValue(papszOptions, "LineOffset");
         if( pszLineOffset != nullptr )
             nLineOffset = atoi(pszLineOffset);
