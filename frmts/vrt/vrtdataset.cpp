@@ -1004,46 +1004,73 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
     // Parse query string
     CPLStringList aosTokens(CSLTokenizeString2(osQueryString, "&", 0));
     std::vector<int> anBands;
+
+    bool bbox=false;
+    double xmin, xmax, ymin, ymax = 0.0;
     for( int i = 0; i < aosTokens.size(); i++ )
     {
-        char* pszKey = nullptr;
-        const char* pszValue = CPLParseNameValue(aosTokens[i], &pszKey);
-        if( pszKey && pszValue )
+      bool done=false;
+      char* pszKey = nullptr;
+      const char* pszValue = CPLParseNameValue(aosTokens[i], &pszKey);
+      if( pszKey && pszValue )
+      {
+        if( EQUAL(pszKey, "bands") )
         {
-            if( EQUAL(pszKey, "bands") )
+          done = true;
+          CPLStringList aosBands(CSLTokenizeString2(pszValue, ",", 0));
+          for( int j = 0; j < aosBands.size(); j++ )
+          {
+            if( EQUAL(aosBands[j], "mask") )
             {
-                CPLStringList aosBands(CSLTokenizeString2(pszValue, ",", 0));
-                for( int j = 0; j < aosBands.size(); j++ )
-                {
-                    if( EQUAL(aosBands[j], "mask") )
-                    {
-                        anBands.push_back(0);
-                    }
-                    else
-                    {
-                        const int nBand = atoi(aosBands[j]);
-                        if( nBand <= 0 || nBand > poSrcDS->GetRasterCount() )
-                        {
-                            CPLError(CE_Failure, CPLE_IllegalArg,
-                                    "Invalid band number: %s", aosBands[j]);
-                            poSrcDS->ReleaseRef();
-                            CPLFree(pszKey);
-                            return nullptr;
-                        }
-                        anBands.push_back(nBand);
-                    }
-                }
+              anBands.push_back(0);
             }
             else
             {
-                CPLError(CE_Failure, CPLE_NotSupported,
-                         "Unknown option: %s", pszKey);
+              const int nBand = atoi(aosBands[j]);
+              if( nBand <= 0 || nBand > poSrcDS->GetRasterCount() )
+              {
+                CPLError(CE_Failure, CPLE_IllegalArg,
+                         "Invalid band number: %s", aosBands[j]);
                 poSrcDS->ReleaseRef();
                 CPLFree(pszKey);
                 return nullptr;
+              }
+              anBands.push_back(nBand);
             }
+          }
         }
-        CPLFree(pszKey);
+        if( EQUAL(pszKey, "a_ullr") )
+        {
+          done = true;
+          // Parse the limits
+          CPLStringList aosUllr(CSLTokenizeString2(pszValue, ",", 0));
+          // Blow up if not four limits
+          if(aosUllr.size() != 4)
+          {
+            CPLError(CE_Failure, CPLE_IllegalArg,
+                     "Invalid a_ullr spec: %s", pszValue);
+            poSrcDS->ReleaseRef();
+            CPLFree(pszKey);
+            return nullptr;
+          }
+          xmin = atof(aosUllr[0]);
+          xmax = atof(aosUllr[2]);
+          ymin = atof(aosUllr[3]);
+          ymax = atof(aosUllr[1]);
+          bbox = true;
+        }
+
+
+        if (done == false)
+        {
+          CPLError(CE_Failure, CPLE_NotSupported,
+                   "Unknown option: %s", pszKey);
+          poSrcDS->ReleaseRef();
+          CPLFree(pszKey);
+          return nullptr;
+        }
+      }
+      CPLFree(pszKey);
     }
 
     CPLStringList argv;
@@ -1052,8 +1079,18 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
 
     for( const int nBand: anBands )
     {
-        argv.AddString("-b");
-        argv.AddString(nBand == 0 ? "mask" : CPLSPrintf("%d", nBand));
+      argv.AddString("-b");
+      argv.AddString(nBand == 0 ? "mask" : CPLSPrintf("%d", nBand));
+    }
+
+    if (bbox) {
+      argv.AddString("-a_ullr");
+      argv.AddString(CPLSPrintf("%f", xmin));
+      argv.AddString(CPLSPrintf("%f", ymax));
+      argv.AddString(CPLSPrintf("%f", xmax));
+      argv.AddString(CPLSPrintf("%f", ymin));
+
+
     }
 
     GDALTranslateOptions* psOptions = GDALTranslateOptionsNew(argv.List(), nullptr);
