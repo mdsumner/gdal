@@ -1005,8 +1005,9 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
     CPLStringList aosTokens(CSLTokenizeString2(osQueryString, "&", 0));
     std::vector<int> anBands;
 
-    bool bbox=false;
+    bool bbox, aa_srs = false;
     double xmin, xmax, ymin, ymax = 0.0;
+    CPLString a_srs_string;
     for( int i = 0; i < aosTokens.size(); i++ )
     {
       bool done=false;
@@ -1060,6 +1061,11 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
           bbox = true;
         }
 
+        if ( EQUAL(pszKey, "a_srs")) {
+          a_srs_string = CPLStrdup(pszValue);
+          aa_srs = true;
+          done = true;
+        }
 
         if (done == false)
         {
@@ -1074,6 +1080,7 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
     }
 
     CPLStringList argv;
+
     argv.AddString("-of");
     argv.AddString("VRT");
 
@@ -1089,9 +1096,16 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
       argv.AddString(CPLSPrintf("%f", ymax));
       argv.AddString(CPLSPrintf("%f", xmax));
       argv.AddString(CPLSPrintf("%f", ymin));
-
-
     }
+
+    if (aa_srs) {
+      argv.AddString("-a_srs");
+      argv.AddString(a_srs_string);
+      CPLError(CE_Failure, CPLE_IllegalArg,
+               "%s %s", argv[argv.size() - 2], argv[argv.size() - 1]);
+    }
+
+
 
     GDALTranslateOptions* psOptions = GDALTranslateOptionsNew(argv.List(), nullptr);
 
@@ -1108,6 +1122,7 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
         poDS->SetDescription(pszSpec);
         poDS->SetWritable(false);
     }
+
     return poDS;
 }
 
