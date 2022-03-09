@@ -1005,10 +1005,12 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
     CPLStringList aosTokens(CSLTokenizeString2(osQueryString, "&", 0));
     std::vector<int> anBands;
 
-    bool bbox, a_srs, ot = false;
+    bool bbox, a_srs, ot, oformat, expand = false;
     double xmin, xmax, ymin, ymax = 0.0;
     CPLString a_srs_string;
     CPLString output_type;
+    CPLString open_format;
+    CPLString expand_string;
 
     for( int i = 0; i < aosTokens.size(); i++ )
     {
@@ -1073,6 +1075,18 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
           ot = true;
           done = true;
         }
+        if ( EQUAL(pszKey, "if")) {
+          open_format = CPLStrdup(pszValue);
+          oformat = true;
+          done = true;
+        }
+        // gdalinfo "vrt://autotest/gcore/data/test_average_palette.tif?expand=rgba"
+        // this fails periodically, is it a transient temp file somewhere??
+        if ( EQUAL(pszKey, "expand")) {
+          expand_string = CPLStrdup(pszValue);
+          expand = true;
+          done = true;
+        }
 
         if (done == false)
         {
@@ -1115,6 +1129,16 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
       argv.AddString(output_type);
     }
 
+    // seems not to work ?
+    if (oformat) {
+      argv.AddString("-if");
+      argv.AddString(open_format);
+    }
+
+    if (expand) {
+      argv.AddString("-expand");
+      argv.AddString(expand_string);
+    }
     GDALTranslateOptions* psOptions = GDALTranslateOptionsNew(argv.List(), nullptr);
 
     auto hRet = GDALTranslate("", GDALDataset::ToHandle(poSrcDS),
