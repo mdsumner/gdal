@@ -1166,7 +1166,7 @@ GDALDataset *VRTDataset::OpenVRTProtocol( const char* pszSpec )
 /************************************************************************/
 
 GDALDataset *VRTDataset::OpenXML( const char *pszXML, const char *pszVRTPath,
-                                  GDALAccess eAccess)
+                                  GDALAccess eAccessIn)
 
 {
  /* -------------------------------------------------------------------- */
@@ -1222,7 +1222,7 @@ GDALDataset *VRTDataset::OpenXML( const char *pszXML, const char *pszVRTPath,
     else
     {
         poDS = new VRTDataset( nXSize, nYSize );
-        poDS->eAccess = eAccess;
+        poDS->eAccess = eAccessIn;
     }
 
     if( poDS->XMLInit( psRoot, pszVRTPath ) != CE_None )
@@ -1457,7 +1457,7 @@ int CPL_STDCALL VRTAddBand( VRTDatasetH hDataset, GDALDataType eType,
 
 GDALDataset *
 VRTDataset::Create( const char * pszName,
-                    int nXSize, int nYSize, int nBands,
+                    int nXSize, int nYSize, int nBandsIn,
                     GDALDataType eType, char ** papszOptions )
 
 {
@@ -1491,7 +1491,7 @@ VRTDataset::Create( const char * pszName,
 
     poDS->SetDescription( pszName );
 
-    for( int iBand = 0; iBand < nBands; iBand++ )
+    for( int iBand = 0; iBand < nBandsIn; iBand++ )
         poDS->AddBand( eType, nullptr );
 
     poDS->SetNeedsFlush();
