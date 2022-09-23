@@ -13,14 +13,32 @@ Download
 Current Release
 ------------------------------------------------------------------------------
 
+* **2022-09-12** `gdal-3.5.2.tar.gz`_ `3.5.2 Release Notes`_ (`3.5.2 md5`_)
+
+.. _`3.5.2 Release Notes`: https://github.com/OSGeo/gdal/blob/v3.5.2/NEWS.md
+.. _`gdal-3.5.2.tar.gz`: https://github.com/OSGeo/gdal/releases/download/v3.5.2/gdal-3.5.2.tar.gz
+.. _`3.5.2 md5`: https://github.com/OSGeo/gdal/releases/download/v3.5.2/gdal-3.5.2.tar.gz.md5
+
+Past Releases
+------------------------------------------------------------------------------
+
+* **2022-07-06** `gdal-3.5.1.tar.gz`_ `3.5.1 Release Notes`_ (`3.5.1 md5`_)
+
+.. _`3.5.1 Release Notes`: https://github.com/OSGeo/gdal/blob/v3.5.1/NEWS.md
+.. _`gdal-3.5.1.tar.gz`: https://github.com/OSGeo/gdal/releases/download/v3.5.1/gdal-3.5.1.tar.gz
+.. _`3.5.1 md5`: https://github.com/OSGeo/gdal/releases/download/v3.5.1/gdal-3.5.1.tar.gz.md5
+
+* **2022-05-13** `gdal-3.5.0.tar.gz`_ `3.5.0 Release Notes`_ (`3.5.0 md5`_)
+
+.. _`3.5.0 Release Notes`: https://github.com/OSGeo/gdal/blob/v3.5.0/NEWS.md
+.. _`gdal-3.5.0.tar.gz`: https://github.com/OSGeo/gdal/releases/download/v3.5.0/gdal-3.5.0.tar.gz
+.. _`3.5.0 md5`: https://github.com/OSGeo/gdal/releases/download/v3.5.0/gdal-3.5.0.tar.gz.md5
+
 * **2022-04-22** `gdal-3.4.3.tar.gz`_ `3.4.3 Release Notes`_ (`3.4.3 md5`_)
 
 .. _`3.4.3 Release Notes`: https://github.com/OSGeo/gdal/blob/v3.4.3/gdal/NEWS.md
 .. _`gdal-3.4.3.tar.gz`: https://github.com/OSGeo/gdal/releases/download/v3.4.3/gdal-3.4.3.tar.gz
 .. _`3.4.3 md5`: https://github.com/OSGeo/gdal/releases/download/v3.4.3/gdal-3.4.3.tar.gz.md5
-
-Past Releases
-------------------------------------------------------------------------------
 
 * **2022-03-08** `gdal-3.4.2.tar.gz`_ `3.4.2 Release Notes`_ (`3.4.2 md5`_)
 
@@ -243,6 +261,23 @@ available at https://anaconda.org/conda-forge/gdal.
 ::
 
     conda install -c conda-forge gdal
+
+Vcpkg
+................................................................................
+
+The gdal port in vcpkg is kept up to date by Microsoft team members and community contributors.
+The url of vcpkg is: https://github.com/Microsoft/vcpkg .
+You can download and install gdal using the vcpkg dependency manager:
+
+::
+
+    git clone https://github.com/Microsoft/vcpkg.git
+    cd vcpkg
+    ./bootstrap-vcpkg.sh  # ./bootstrap-vcpkg.bat for Windows
+    ./vcpkg integrate install
+    ./vcpkg install gdal
+
+If the version is out of date, please `create an issue or pull request <https://github.com/Microsoft/vcpkg>`__ on the vcpkg repository.
 
 
 Linux Docker images

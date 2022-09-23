@@ -448,14 +448,6 @@ void CPL_STDCALL GDALAllRegister()
     GDALRegister_GXF();
 #endif
 
-#ifdef FRMT_grass
-    GDALRegister_GRASS();
-#endif
-
-#ifdef FRMT_dods
-    GDALRegister_DODS();
-#endif
-
 /* Register KEA before HDF5 */
 #ifdef FRMT_kea
     GDALRegister_KEA();
@@ -566,6 +558,15 @@ void CPL_STDCALL GDALAllRegister()
     GDALRegister_STACIT();
 #endif
 
+#ifdef FRMT_jpegxl
+    GDALRegister_JPEGXL();
+#endif
+
+#ifdef FRMT_basisu_ktx2
+    GDALRegister_BASISU();
+    GDALRegister_KTX2();
+#endif
+
     // NOTE: you need to generally insert your own driver before that line.
 
     // NOTE: frmts/drivers.ini in the same directory should be kept in same
@@ -600,7 +601,7 @@ void CPL_STDCALL GDALAllRegister()
 /*      Register GDAL HTTP last, to let a chance to other drivers       */
 /*      accepting URL to handle them before.                            */
 /* -------------------------------------------------------------------- */
-#if (!defined(GDAL_CMAKE_BUILD) && defined(FRMT_wcs)) || (defined(GDAL_CMAKE_BUILD) && defined(FRMT_http))
+#ifdef FRMT_http
     GDALRegister_HTTP();
 #endif
 

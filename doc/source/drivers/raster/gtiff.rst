@@ -733,7 +733,7 @@ the default behavior of the GTiff driver.
 -  :decl_configoption:`ESRI_XML_PAM` : Can be set to TRUE to force metadata in the xml:ESRI
    domain to be written to PAM.
 -  :decl_configoption:`COMPRESS_OVERVIEW` :  See `Creation Options COMPRESS <#creation-options>`__ section.
-   Set the compression type to use for overviews
+   Set the compression type to use for overviews. For internal overviews, only honoured since GDAL 3.6
 -  :decl_configoption:`PHOTOMETRIC_OVERVIEW` :  YCBCR
    Set the photometric color space for overview creation
 -  :decl_configoption:`PREDICTOR_OVERVIEW` : Integer 1,2 or 3.
@@ -816,6 +816,53 @@ the default behavior of the GTiff driver.
    If set to YES, then the TOWGS84 transformation attached to the CRS will be
    always written. If set to NO, then the transformation will not be written in
    any situation.
+
+
+Codec Recommendations
+---------------------
+
+
+LZW
+~~~
+
+If you don't know what to choose, choose this one.
+
+DEFLATE
+~~~~~~~
+
+The most commonly supported TIFF codec, especially with older non-geo software.
+
+LERC
+~~~~
+
+Used for storing quantized floating point data. https://github.com/esri/lerc
+
+
+ZSTD
+~~~~
+
+Smaller and faster than DEFLATE, but not as commonly supported.
+
+WEBP
+~~~~
+
+A smaller and faster JPEG.
+
+JXL
+~~~
+
+Next-gen JPG from the JPG group.
+
+
+LZMA
+~~~~
+
+Slow but storage efficient.
+
+CCITTRLE/CCITTFAX3/CCITTFAX4
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Did you happen to have fax files from the 1990s? Use these.
 
 See Also
 --------

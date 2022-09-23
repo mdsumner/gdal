@@ -111,9 +111,9 @@ Schema detection will recognized fields of type String, Integer, Real,
 StringList, IntegerList and RealList, Integer(Boolean), Date, Time and DateTime.
 
 It is possible to tell the driver to not to process attributes by
-setting configuration option :decl_configoption:`ATTRIBUTES_SKIP` =YES. 
-Default behavior is to preserve all attributes (as an union, see 
-previous paragraph), what is equal to setting 
+setting configuration option :decl_configoption:`ATTRIBUTES_SKIP` =YES.
+Default behavior is to preserve all attributes (as an union, see
+previous paragraph), what is equal to setting
 :decl_configoption:`ATTRIBUTES_SKIP` =NO.
 
 If the NATIVE_DATA open option is set to YES, the Feature JSon object
@@ -147,7 +147,7 @@ the :decl_configoption:`GEOMETRY_AS_COLLECTION` configuration option to YES
 Configuration options
 ---------------------
 
-The following :ref:`configuration options <configoptions>` are 
+The following :ref:`configuration options <configoptions>` are
 available:
 
 -  :decl_configoption:`GEOMETRY_AS_COLLECTION`: used to control translation of
@@ -155,7 +155,8 @@ available:
 -  :decl_configoption:`ATTRIBUTES_SKIP` - controls translation of attributes:
    YES - skip all attributes
 -  :decl_configoption:`OGR_GEOJSON_MAX_OBJ_SIZE` (GDAL >= 3.0.2): size in
-   MBytes of the maximum accepted single feature, default value is 200MB
+   MBytes of the maximum accepted single feature, default value is 200MB.
+   Or 0 to allow for a unlimited size (GDAL >= 3.5.2).
 
 Open options
 ------------
@@ -243,6 +244,10 @@ Layer creation options
    7946 <https://tools.ietf.org/html/rfc7946>`__ standard. Otherwise
    `GeoJSON 2008 <http://geojson.org/geojson-spec.html>`__ initial
    version will be used. Default is NO (thus GeoJSON 2008)
+-  **WRAPDATELINE** \=YES/NO (OGR >= 3.5.2) Whether to apply heuristics
+   to split geometries that cross dateline. Only used when coordinate
+   transformation occurs or when RFC7946=YES. Default is YES (and also the
+   behavior for OGR < 3.5.2).
 -  **WRITE_NAME**\ =YES/NO. (OGR >= 2.2) Whether to write a "name"
    property at feature collection level with layer name. Defaults to
    YES.

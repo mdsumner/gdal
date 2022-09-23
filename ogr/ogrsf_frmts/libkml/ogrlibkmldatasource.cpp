@@ -263,7 +263,7 @@ static void OGRLIBKMLPostProcessOutput( std::string& oKml )
 {
     // Manually add <?xml> node since libkml does not produce it currently
     // and this is useful in some circumstances (#5407).
-    if( !(oKml[0] == '<' && oKml[1] == '?') )
+    if( !(oKml.size() >= 2 && oKml[0] == '<' && oKml[1] == '?') )
         oKml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + oKml;
 
     size_t nPos = 0;
@@ -2609,10 +2609,12 @@ int OGRLIBKMLDataSource::TestCapability( const char *pszCap )
 {
     if( EQUAL( pszCap, ODsCCreateLayer ) )
         return bUpdate;
-    if( EQUAL( pszCap, ODsCDeleteLayer ) )
+    else if( EQUAL( pszCap, ODsCDeleteLayer ) )
         return bUpdate;
-    if( EQUAL(pszCap,ODsCRandomLayerWrite) )
+    else if( EQUAL(pszCap,ODsCRandomLayerWrite) )
         return bUpdate;
+    else if( EQUAL(pszCap, ODsCZGeometries) )
+        return TRUE;
 
     return FALSE;
 }

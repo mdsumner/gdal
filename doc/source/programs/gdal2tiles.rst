@@ -20,7 +20,7 @@ Synopsis
                   [-e] [-a nodata] [-v] [-q] [-h] [-k] [-n] [-u url]
                   [-w webviewer] [-t title] [-c copyright]
                   [--processes=NB_PROCESSES] [--mpi] [--xyz]
-                  --tilesize=PIXELS
+                  [--tilesize=PIXELS] [--tmscompatible]
                   [-g googlekey] [-b bingkey] input_file [output_dir] [COMMON_OPTIONS]
 
 Description
@@ -75,6 +75,11 @@ can publish a picture without proper georeferencing too.
   in XYZ mode (used by OGC WMTS too), tiles at y=0 are the northern-most tiles.
 
   .. versionadded:: 3.1
+  
+.. option:: -d, --tmscompatible
+  
+  When using the geodetic profile, specifies the base resolution as 0.703125
+  or 2 tiles at zoom level 0.
 
 .. option:: -z <ZOOM>, --zoom=<ZOOM>
 
@@ -123,6 +128,15 @@ can publish a picture without proper georeferencing too.
   Width and height in pixel of a tile. Default is 256.
 
   .. versionadded:: 3.1
+
+.. option:: --tiledriver=<DRIVER>
+
+  Which output driver to use for the tiles, determines the file format of the tiles.
+  Currently PNG and WEBP are supported. Default is PNG.
+  Additional configuration for the WEBP driver are documented below.
+
+  .. versionadded:: 3.6
+
 
 .. option:: -h, --help
 
@@ -205,6 +219,30 @@ Available options are:
     will be used
 
 The --url option is also used to substitute ``${URL}`` in the template MapML file.
+
+WEBP options
++++++++++++++
+
+WEBP tiledriver support is new to GDAL 3.6. It is enabled by using --tiledriver=WEBP.
+
+
+The following configuration options are available to further customize the webp output:
+
+.. option:: --webp-quality=<QUALITY>
+
+    QUALITY is a integer between 1-100. Default is 75.
+
+.. option:: --webp-lossless
+
+    Use WEBP lossless compression, default is lossy
+
+
+.. note::
+
+    GDAL :ref:`WEBP driver <raster.webp>` documentation can be consulted
+
+
+
 
 Examples
 --------

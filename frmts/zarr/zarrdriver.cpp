@@ -48,6 +48,31 @@ ZarrDataset::ZarrDataset(const std::shared_ptr<GDALGroup>& poRootGroup):
 }
 
 /************************************************************************/
+/*                    CheckExistenceOfOneZarrFile()                     */
+/************************************************************************/
+
+static bool CheckExistenceOfOneZarrFile(const char* pszFilename)
+{
+
+    CPLString osMDFilename = CPLFormFilename( pszFilename, ".zarray", nullptr );
+
+    VSIStatBufL sStat;
+    if( VSIStatL( osMDFilename, &sStat ) == 0 )
+        return true;
+
+    osMDFilename = CPLFormFilename( pszFilename, ".zgroup", nullptr );
+    if( VSIStatL( osMDFilename, &sStat ) == 0 )
+        return true;
+
+    // Zarr V3
+    osMDFilename = CPLFormFilename( pszFilename, "zarr.json", nullptr );
+    if( VSIStatL( osMDFilename, &sStat ) == 0 )
+        return true;
+
+    return false;
+}
+
+/************************************************************************/
 /*                              Identify()                              */
 /************************************************************************/
 
@@ -64,25 +89,7 @@ int ZarrDataset::Identify( GDALOpenInfo *poOpenInfo )
         return FALSE;
     }
 
-    CPLString osMDFilename = CPLFormFilename( poOpenInfo->pszFilename,
-                                              ".zarray", nullptr );
-
-    VSIStatBufL sStat;
-    if( VSIStatL( osMDFilename, &sStat ) == 0 )
-        return TRUE;
-
-    osMDFilename = CPLFormFilename( poOpenInfo->pszFilename,
-                                    ".zgroup", nullptr );
-    if( VSIStatL( osMDFilename, &sStat ) == 0 )
-        return TRUE;
-
-    // Zarr V3
-    osMDFilename = CPLFormFilename( poOpenInfo->pszFilename,
-                                    "zarr.json", nullptr );
-    if( VSIStatL( osMDFilename, &sStat ) == 0 )
-        return TRUE;
-
-    return FALSE;
+    return CheckExistenceOfOneZarrFile(poOpenInfo->pszFilename);
 }
 
 /************************************************************************/
@@ -270,6 +277,35 @@ GDALDataset* ZarrDataset::Open(GDALOpenInfo* poOpenInfo)
         if( aosTokens.size() < 2 )
             return nullptr;
         osFilename = aosTokens[1];
+        std::string osErrorMsgSuffix;
+        if( osFilename == "http" || osFilename == "https" )
+        {
+            osErrorMsgSuffix = "\nThere is likely a quoting error of the whole "
+                               "connection string, and the filename should "
+                               "likely be prefixed with /vsicurl/";
+        }
+        else if( osFilename == "/vsicurl/http" || osFilename == "/vsicurl/https" )
+        {
+            osErrorMsgSuffix = "\nThere is likely a quoting error of the whole "
+                               "connection string.";
+        }
+        if( !osErrorMsgSuffix.empty() || !CheckExistenceOfOneZarrFile(osFilename.c_str()) )
+        {
+            std::string osErrorMsg("Cannot find any of Zarr metadata files in '");
+            osErrorMsg += osFilename;
+            osErrorMsg += "'.";
+            if( !osErrorMsgSuffix.empty() )
+            {
+                osErrorMsg += osErrorMsgSuffix;
+            }
+            else if( STARTS_WITH(osFilename.c_str(), "http://") ||
+                     STARTS_WITH(osFilename.c_str(), "https://") )
+            {
+                osErrorMsg += "\nThe filename should likely be prefixed with /vsicurl/";
+            }
+            CPLError(CE_Failure, CPLE_AppDefined, "%s", osErrorMsg.c_str());
+            return nullptr;
+        }
         if( aosTokens.size() >= 3 )
         {
             osArrayOfInterest = aosTokens[2];
@@ -294,6 +330,8 @@ GDALDataset* ZarrDataset::Open(GDALOpenInfo* poOpenInfo)
 
     auto poDS = cpl::make_unique<ZarrDataset>(nullptr);
     std::shared_ptr<GDALMDArray> poMainArray;
+    std::vector<std::string> aosArrays;
+    std::string osMainArray;
     if( !osArrayOfInterest.empty() )
     {
         poMainArray = osArrayOfInterest == "/" ? poRG->OpenMDArray("/") :
@@ -340,12 +378,10 @@ GDALDataset* ZarrDataset::Open(GDALOpenInfo* poOpenInfo)
     }
     else
     {
-        std::vector<std::string> aosArrays;
         ExploreGroup(poRG, aosArrays, 0);
         if( aosArrays.empty() )
             return nullptr;
 
-        std::string osMainArray;
         if( aosArrays.size() == 1 )
         {
             poMainArray = poRG->OpenMDArrayFromFullname(aosArrays[0]);
@@ -447,17 +483,14 @@ GDALDataset* ZarrDataset::Open(GDALOpenInfo* poOpenInfo)
         {
             for( size_t i = 0; i < aosArrays.size(); ++i )
             {
-                if( aosArrays[i] != osMainArray )
-                {
-                    poDS->m_aosSubdatasets.AddString(
-                        CPLSPrintf("SUBDATASET_%d_NAME=ZARR:\"%s\":%s",
-                                   iCountSubDS, osFilename.c_str(),
-                                   aosArrays[i].c_str()));
-                    poDS->m_aosSubdatasets.AddString(
-                        CPLSPrintf("SUBDATASET_%d_DESC=Array %s",
-                                   iCountSubDS, aosArrays[i].c_str()));
-                    ++iCountSubDS;
-                }
+                poDS->m_aosSubdatasets.AddString(
+                    CPLSPrintf("SUBDATASET_%d_NAME=ZARR:\"%s\":%s",
+                               iCountSubDS, osFilename.c_str(),
+                               aosArrays[i].c_str()));
+                poDS->m_aosSubdatasets.AddString(
+                    CPLSPrintf("SUBDATASET_%d_DESC=Array %s",
+                               iCountSubDS, aosArrays[i].c_str()));
+                ++iCountSubDS;
             }
         }
     }
@@ -466,12 +499,55 @@ GDALDataset* ZarrDataset::Open(GDALOpenInfo* poOpenInfo)
     {
         std::unique_ptr<GDALDataset> poNewDS;
         if( poMainArray->GetDimensionCount() == 2 )
+        {
             poNewDS.reset(poMainArray->AsClassicDataset(1, 0));
+
+            // If we have 3 arrays, check that the 2 ones that are not the main
+            // 2D array are indexing variables of its dimensions. If so, don't
+            // expose them as subdatasets
+            if( aosArrays.size() == 3 )
+            {
+                std::vector<std::string> aosOtherArrays;
+                for( size_t i = 0; i < aosArrays.size(); ++i )
+                {
+                    if( aosArrays[i] != osMainArray )
+                    {
+                        aosOtherArrays.emplace_back(aosArrays[i]);
+                    }
+                }
+                bool bMatchFound[] = { false, false };
+                for(int i = 0; i < 2; i++ )
+                {
+                    auto poIndexingVar =
+                        poMainArray->GetDimensions()[i]->GetIndexingVariable();
+                    if( poIndexingVar )
+                    {
+                        for( int j = 0; j < 2; j++ )
+                        {
+                            if( aosOtherArrays[j] == poIndexingVar->GetFullName() )
+                            {
+                                bMatchFound[i] = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if( bMatchFound[0] && bMatchFound[1] )
+                {
+                    poDS->m_aosSubdatasets.Clear();
+                }
+            }
+        }
         else
+        {
             poNewDS.reset(poMainArray->AsClassicDataset(0, 0));
+        }
         if( !poNewDS )
             return nullptr;
-        poNewDS->SetMetadata(poDS->m_aosSubdatasets.List(), "SUBDATASETS");
+        if( !poDS->m_aosSubdatasets.empty() )
+        {
+            poNewDS->SetMetadata(poDS->m_aosSubdatasets.List(), "SUBDATASETS");
+        }
         return poNewDS.release();
     }
 

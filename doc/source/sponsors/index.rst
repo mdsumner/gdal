@@ -142,6 +142,14 @@ the health of the project:
 
     .. container:: horizontal-logo
 
+        `PIX4D <https://www.pix4d.com/>`__
+
+    .. container:: horizontal-logo
+
+        `Regrid <https://regrid.com>`__
+
+    .. container:: horizontal-logo
+
         `Space Intelligence <https://www.space-intelligence.com>`__
 
     .. container:: horizontal-logo

@@ -191,9 +191,7 @@ OGRSpatialReference::Private::Private():
 {
     // Get the default value for m_axisMappingStrategy from the
     // OSR_DEFAULT_AXIS_MAPPING_STRATEGY configuration option, if set.
-    static const OSRAxisMappingStrategy defaultAxisMappingStrategy = GetDefaultAxisMappingStrategy();
-
-    m_axisMappingStrategy = defaultAxisMappingStrategy;
+    m_axisMappingStrategy = GetDefaultAxisMappingStrategy();
 }
 
 OGRSpatialReference::Private::~Private()
@@ -301,7 +299,11 @@ void OGRSpatialReference::Private::refreshProjObj()
         m_coordinateEpoch = dfCoordinateEpochBackup;
         m_bHasCenterLong = strstr(pszWKT, "CENTER_LONG") != nullptr;
 
-        const char* const options[] = { "STRICT=NO", nullptr };
+        const char* const options[] = { "STRICT=NO",
+#if PROJ_AT_LEAST_VERSION(9,1,0)
+                                        "UNSET_IDENTIFIERS_IF_INCOMPATIBLE_DEF=NO",
+#endif
+                                        nullptr };
         PROJ_STRING_LIST warnings = nullptr;
         PROJ_STRING_LIST errors = nullptr;
         setPjCRS(proj_create_from_wkt(
@@ -1640,7 +1642,8 @@ OGRErr OGRSpatialReference::exportToWkt( char ** ppszResult,
     {
         if( pszFormat[0] == '\0' &&
             (oError.msg.find("Unsupported conversion method") != std::string::npos ||
-             oError.msg.find("can only be exported to WKT2") != std::string::npos) )
+             oError.msg.find("can only be exported to WKT2") != std::string::npos ||
+             oError.msg.find("can only be exported since WKT2:2019") != std::string::npos) )
         {
             CPLErrorReset();
             // If we cannot export in the default mode (WKT1), retry with WKT2
@@ -1843,6 +1846,26 @@ OGRErr OSRExportToPROJJSON( OGRSpatialReferenceH hSRS,
 OGRErr OGRSpatialReference::importFromWkt( const char ** ppszInput )
 
 {
+    return importFromWkt(ppszInput, nullptr);
+}
+
+/************************************************************************/
+/*                           importFromWkt()                            */
+/************************************************************************/
+
+/*! @cond Doxygen_Suppress */
+
+OGRErr OGRSpatialReference::importFromWkt( const char * pszInput,
+                                           CSLConstList papszOptions )
+
+{
+    return importFromWkt(&pszInput, papszOptions);
+}
+
+OGRErr OGRSpatialReference::importFromWkt( const char ** ppszInput,
+                                           CSLConstList papszOptions )
+
+{
     if( !ppszInput || !*ppszInput )
         return OGRERR_FAILURE;
     if( strlen(*ppszInput) > 100 * 1000 &&
@@ -1870,11 +1893,13 @@ OGRErr OGRSpatialReference::importFromWkt( const char ** ppszInput )
         }
         else
         {
-            const char* const options[] = { "STRICT=NO", nullptr };
+            CPLStringList aosOptions(papszOptions);
+            if( aosOptions.FetchNameValue("STRICT") == nullptr )
+                aosOptions.SetNameValue("STRICT", "NO");
             PROJ_STRING_LIST warnings = nullptr;
             PROJ_STRING_LIST errors = nullptr;
             d->setPjCRS(proj_create_from_wkt(
-                d->getPROJContext(), *ppszInput, options, &warnings, &errors));
+                d->getPROJContext(), *ppszInput, aosOptions.List(), &warnings, &errors));
             for( auto iter = warnings; iter && *iter; ++iter ) {
                 d->m_wktImportWarnings.push_back(*iter);
             }
@@ -1950,6 +1975,7 @@ OGRErr OGRSpatialReference::importFromWkt( const char ** ppszInput )
     }
 #endif
 }
+/*! @endcond */
 
 /**
  * \brief Import from WKT string.
@@ -2803,24 +2829,34 @@ double OGRSpatialReference::GetTargetLinearUnits( const char *pszTargetKey,
             PJ* coordSys = nullptr;
             if( d->m_pjType == PJ_TYPE_COMPOUND_CRS )
             {
-                auto subCRS = proj_crs_get_sub_crs(
-                    d->getPROJContext(), d->m_pj_crs, 1);
-                if( subCRS && proj_get_type(subCRS) == PJ_TYPE_BOUND_CRS )
+                for(int iComponent = 0; iComponent < 2; iComponent++ )
                 {
-                    auto temp = proj_get_source_crs(
-                        d->getPROJContext(), subCRS);
-                    proj_destroy(subCRS);
-                    subCRS = temp;
+                    auto subCRS = proj_crs_get_sub_crs(
+                        d->getPROJContext(), d->m_pj_crs, iComponent);
+                    if( subCRS && proj_get_type(subCRS) == PJ_TYPE_BOUND_CRS )
+                    {
+                        auto temp = proj_get_source_crs(
+                            d->getPROJContext(), subCRS);
+                        proj_destroy(subCRS);
+                        subCRS = temp;
+                    }
+                    if( subCRS &&
+                        (proj_get_type(subCRS) == PJ_TYPE_PROJECTED_CRS ||
+                         proj_get_type(subCRS) == PJ_TYPE_ENGINEERING_CRS ||
+                         proj_get_type(subCRS) == PJ_TYPE_VERTICAL_CRS) )
+                    {
+                        coordSys = proj_crs_get_coordinate_system(
+                            d->getPROJContext(), subCRS);
+                        proj_destroy(subCRS);
+                        break;
+                    }
+                    else if( subCRS )
+                    {
+                        proj_destroy(subCRS);
+                    }
                 }
-                if( subCRS && proj_get_type(subCRS) == PJ_TYPE_VERTICAL_CRS )
+                if( coordSys == nullptr )
                 {
-                    coordSys = proj_crs_get_coordinate_system(
-                        d->getPROJContext(), subCRS);
-                    proj_destroy(subCRS);
-                }
-                else
-                {
-                    proj_destroy(subCRS);
                     d->undoDemoteFromBoundCRS();
                     break;
                 }
@@ -3513,6 +3549,36 @@ CSLConstList OGRSpatialReference::SET_FROM_USER_INPUT_LIMITATIONS_get()
 }
 
 /************************************************************************/
+/*                      RemoveIDFromMemberOfEnsembles()                 */
+/************************************************************************/
+
+static void RemoveIDFromMemberOfEnsembles(CPLJSONObject& obj)
+{
+    // Remove "id" from members of datum ensembles for compatibility with
+    // older PROJ versions
+    // Cf https://github.com/opengeospatial/geoparquet/discussions/110
+    // and https://github.com/OSGeo/PROJ/pull/3221
+    if( obj.GetType() == CPLJSONObject::Type::Object )
+    {
+        for( auto& subObj: obj.GetChildren() )
+        {
+            RemoveIDFromMemberOfEnsembles(subObj);
+        }
+    }
+    else if( obj.GetType() == CPLJSONObject::Type::Array &&
+             obj.GetName() == "members" )
+    {
+        for( auto& subObj: obj.ToArray() )
+        {
+            if( subObj.GetType() == CPLJSONObject::Type::Object )
+            {
+                subObj.Delete("id");
+            }
+        }
+    }
+}
+
+/************************************************************************/
 /*                          SetFromUserInput()                          */
 /************************************************************************/
 
@@ -3634,17 +3700,34 @@ OGRErr OGRSpatialReference::SetFromUserInput( const char * pszDefinition,
         }
     }
 
-    if( STARTS_WITH_CI(pszDefinition, "EPSG:")
+    const bool bStartsWithEPSG = STARTS_WITH_CI(pszDefinition, "EPSG:");
+    if( bStartsWithEPSG
         || STARTS_WITH_CI(pszDefinition, "EPSGA:") )
     {
         OGRErr eStatus = OGRERR_NONE;
 
-        if( STARTS_WITH_CI(pszDefinition, "EPSG:") )
-            eStatus = importFromEPSG( atoi(pszDefinition+5) );
+#if PROJ_VERSION_MAJOR > 6 || PROJ_VERSION_MINOR >= 1
+        if( strchr(pszDefinition, '+') != nullptr )
+        {
+            // Use proj_create() as it allows things like EPSG:3157+4617
+            // that are not normally supported by the below code that
+            // builds manually a compound CRS
+            PJ* pj = proj_create(d->getPROJContext(), pszDefinition);
+            if( !pj )
+            {
+                return OGRERR_FAILURE;
+            }
+            Clear();
+            d->setPjCRS(pj);
+            return OGRERR_NONE;
+        }
+        else
+#endif
+        {
+            eStatus = importFromEPSG( atoi(pszDefinition+ (bStartsWithEPSG ? 5 : 6)) );
+        }
 
-        else // if( STARTS_WITH_CI(pszDefinition, "EPSGA:") )
-            eStatus = importFromEPSGA( atoi(pszDefinition+6) );
-
+#if !(PROJ_VERSION_MAJOR > 6 || PROJ_VERSION_MINOR >= 1)
         // Do we want to turn this into a compound definition
         // with a vertical datum?
         if( eStatus == OGRERR_NONE && strchr( pszDefinition, '+' ) != nullptr )
@@ -3674,6 +3757,7 @@ OGRErr OGRSpatialReference::SetFromUserInput( const char * pszDefinition,
                 SetCompoundCS(osName, &oHorizSRS, &oVertSRS);
             }
         }
+#endif
 
         return eStatus;
     }
@@ -3732,15 +3816,40 @@ OGRErr OGRSpatialReference::SetFromUserInput( const char * pszDefinition,
          strstr(pszDefinition, "ProjectedCRS") ||
          strstr(pszDefinition, "VerticalCRS") ||
          strstr(pszDefinition, "BoundCRS") ||
-         strstr(pszDefinition, "CompoundCRS")) )
+         strstr(pszDefinition, "CompoundCRS") ||
+         strstr(pszDefinition, "DerivedGeodeticCRS") ||
+         strstr(pszDefinition, "DerivedGeographicCRS") ||
+         strstr(pszDefinition, "DerivedProjectedCRS") ||
+         strstr(pszDefinition, "DerivedVerticalCRS") ||
+         strstr(pszDefinition, "EngineeringCRS") ||
+         strstr(pszDefinition, "DerivedEngineeringCRS") ||
+         strstr(pszDefinition, "ParametricCRS") ||
+         strstr(pszDefinition, "DerivedParametricCRS") ||
+         strstr(pszDefinition, "TemporalCRS") ||
+         strstr(pszDefinition, "DerivedTemporalCRS")) )
     {
-        auto obj = proj_create(d->getPROJContext(), pszDefinition);
-        if( !obj )
+        PJ* pj;
+        if( strstr(pszDefinition, "datum_ensemble") != nullptr )
+        {
+            // PROJ < 9.0.1 doesn't like a datum_ensemble whose member have
+            // a unknown id.
+            CPLJSONDocument oCRSDoc;
+            if( !oCRSDoc.LoadMemory(pszDefinition) )
+                return OGRERR_CORRUPT_DATA;
+            CPLJSONObject oCRSRoot = oCRSDoc.GetRoot();
+            RemoveIDFromMemberOfEnsembles(oCRSRoot);
+            pj = proj_create(d->getPROJContext(), oCRSRoot.ToString().c_str());
+        }
+        else
+        {
+            pj = proj_create(d->getPROJContext(), pszDefinition);
+        }
+        if( !pj )
         {
             return OGRERR_FAILURE;
         }
         Clear();
-        d->setPjCRS(obj);
+        d->setPjCRS(pj);
         return OGRERR_NONE;
     }
 
@@ -5371,16 +5480,24 @@ int OGRSpatialReference::FindProjParm( const char *pszParameter,
 /* -------------------------------------------------------------------- */
 /*      Search for requested parameter.                                 */
 /* -------------------------------------------------------------------- */
+    bool bIsWKT2 = false;
     for( int iChild = 0; iChild < poPROJCS->GetChildCount(); iChild++ )
     {
         const OGR_SRSNode *poParameter = poPROJCS->GetChild(iChild);
 
-        if( EQUAL(poParameter->GetValue(), "PARAMETER")
-            && poParameter->GetChildCount() >= 2
-            && EQUAL(poPROJCS->GetChild(iChild)->GetChild(0)->GetValue(),
-                     pszParameter) )
+        if( poParameter->GetChildCount() >= 2 )
         {
-            return iChild;
+            const char* pszValue = poParameter->GetValue();
+            if( EQUAL(pszValue, "PARAMETER")
+                && EQUAL(poPROJCS->GetChild(iChild)->GetChild(0)->GetValue(),
+                         pszParameter) )
+            {
+                return iChild;
+            }
+            else if( EQUAL(pszValue, "METHOD") )
+            {
+                bIsWKT2 = true;
+            }
         }
     }
 
@@ -5389,11 +5506,25 @@ int OGRSpatialReference::FindProjParm( const char *pszParameter,
 /* -------------------------------------------------------------------- */
     if( EQUAL(pszParameter, SRS_PP_LATITUDE_OF_ORIGIN) )
     {
+        if( bIsWKT2 )
+        {
+            int iChild = FindProjParm(EPSG_NAME_PARAMETER_LATITUDE_OF_NATURAL_ORIGIN, poPROJCS );
+            if( iChild == -1 )
+                iChild = FindProjParm(EPSG_NAME_PARAMETER_LATITUDE_PROJECTION_CENTRE, poPROJCS );
+            return iChild;
+        }
         return FindProjParm( SRS_PP_LATITUDE_OF_CENTER, poPROJCS );
     }
 
     if( EQUAL(pszParameter, SRS_PP_CENTRAL_MERIDIAN) )
     {
+        if( bIsWKT2 )
+        {
+            int iChild = FindProjParm(EPSG_NAME_PARAMETER_LONGITUDE_OF_NATURAL_ORIGIN, poPROJCS );
+            if( iChild == -1 )
+                iChild = FindProjParm(EPSG_NAME_PARAMETER_LONGITUDE_PROJECTION_CENTRE, poPROJCS );
+            return iChild;
+        }
         int iChild = FindProjParm(SRS_PP_LONGITUDE_OF_CENTER, poPROJCS );
         if( iChild == -1 )
             iChild = FindProjParm(SRS_PP_LONGITUDE_OF_ORIGIN, poPROJCS );
@@ -8363,6 +8494,8 @@ char * OGRSpatialReference::GetOGCURN() const
  *
  * If this is not a compound coordinate system then nothing is changed.
  *
+ * This method is the same as the C function OSRStripVertical().
+ *
  * @since OGR 1.8.0
  */
 
@@ -8411,6 +8544,23 @@ OGRErr OGRSpatialReference::StripVertical()
     }
 
     return OGRERR_NONE;
+}
+
+/************************************************************************/
+/*                            OSRStripVertical()                             */
+/************************************************************************/
+/**
+ * \brief Convert a compound cs into a horizontal CS.
+ *
+ * This function is the same as the C++ method
+ * OGRSpatialReference::StripVertical().
+ */
+OGRErr OSRStripVertical( OGRSpatialReferenceH hSRS )
+
+{
+    VALIDATE_POINTER1( hSRS, "OSRStripVertical", OGRERR_FAILURE );
+
+    return OGRSpatialReference::FromHandle(hSRS)->StripVertical();
 }
 
 /************************************************************************/

@@ -1236,9 +1236,10 @@ bool OGRGMLDataSource::Open( GDALOpenInfo *poOpenInfo )
 
     // Force a first pass to establish the schema.  Eventually we will have
     // mechanisms for remembering the schema and related information.
+    const char* pszForceSRSDetection = CSLFetchNameValue(
+        poOpenInfo->papszOpenOptions, "FORCE_SRS_DETECTION");
     if( !bHaveSchema ||
-        CPLFetchBool(poOpenInfo->papszOpenOptions, "FORCE_SRS_DETECTION",
-                     false) )
+        (pszForceSRSDetection && CPLTestBool(pszForceSRSDetection)) )
     {
         bool bOnlyDetectSRS = bHaveSchema;
         if( !poReader->PrescanForSchema(true, bOnlyDetectSRS) )
@@ -1276,15 +1277,7 @@ bool OGRGMLDataSource::Open( GDALOpenInfo *poOpenInfo )
     if( EQUAL(pszWriteGFS, "AUTO") )
     {
         if( !bHaveSchema && !poReader->HasStoppedParsing() &&
-            !STARTS_WITH_CI(pszFilename, "/vsitar/") &&
-            !STARTS_WITH_CI(pszFilename, "/vsizip/") &&
-            !STARTS_WITH_CI(pszFilename, "/vsigzip/vsi") &&
-            !STARTS_WITH_CI(pszFilename, "/vsigzip//vsi") &&
-            !STARTS_WITH_CI(pszFilename, "/vsicurl") &&
-            !STARTS_WITH_CI(pszFilename, "/vsis3") &&
-            !STARTS_WITH_CI(pszFilename, "/vsigs") &&
-            !STARTS_WITH_CI(pszFilename, "/vsiaz") &&
-            !STARTS_WITH_CI(pszFilename, "/vsioss") )
+            VSIIsLocal(pszFilename) && VSISupportsSequentialWrite(pszFilename, false) )
         {
             VSIStatBufL sGFSStatBuf;
             if( VSIStatExL(osGFSFilename, &sGFSStatBuf, VSI_STAT_EXISTS_FLAG) != 0 )
@@ -1356,6 +1349,34 @@ bool OGRGMLDataSource::Open( GDALOpenInfo *poOpenInfo )
     {
         papoLayers[nLayers] = TranslateGMLSchema(poReader->GetClass(nLayers));
         nLayers++;
+    }
+
+    // Warn if we have geometry columns without known CRS due to only using
+    // the .xsd
+    if( bHaveSchema && pszForceSRSDetection == nullptr )
+    {
+        bool bExitLoop = false;
+        for( int i = 0; !bExitLoop && i < nLayers; ++i )
+        {
+            const auto poLayer = papoLayers[i];
+            const auto poLayerDefn = poLayer->GetLayerDefn();
+            const auto nGeomFieldCount = poLayerDefn->GetGeomFieldCount();
+            for( int j = 0; j < nGeomFieldCount; ++j )
+            {
+                if( poLayerDefn->GetGeomFieldDefn(j)->GetSpatialRef() == nullptr )
+                {
+                    bExitLoop = true;
+                    break;
+                }
+            }
+        }
+        if( bExitLoop )
+        {
+            CPLDebug("GML",
+                     "Geometry fields without known CRS have been detected. "
+                     "You may want to specify the FORCE_SRS_DETECTION open "
+                     "option to YES.");
+        }
     }
 
     return true;
@@ -2013,6 +2034,8 @@ int OGRGMLDataSource::TestCapability( const char * pszCap )
         return TRUE;
     else if( EQUAL(pszCap, ODsCCurveGeometries) )
         return bIsOutputGML3;
+    else if( EQUAL(pszCap, ODsCZGeometries) )
+        return TRUE;
     else if( EQUAL(pszCap, ODsCRandomLayerWrite) )
         return TRUE;
     else

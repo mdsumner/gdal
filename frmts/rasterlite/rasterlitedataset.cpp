@@ -34,6 +34,7 @@
 #include "rasterlitedataset.h"
 
 #include <algorithm>
+#include <limits>
 
 #if defined(DEBUG) || defined(FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION) || defined(ALLOW_FORMAT_DUMPS)
 // Enable accepting a SQL dump (starting with a "-- SQL SQLITE" or
@@ -182,6 +183,7 @@ CPLErr RasterliteBand::IReadBlock( int nBlockXOff, int nBlockYOff, void * pImage
             CPLError(CE_Failure, CPLE_AppDefined, "null geometry found");
             OGR_F_Destroy(hFeat);
             OGR_DS_ReleaseResultSet(poGDS->hDS, hSQLLyr);
+            memset(pImage, 0, nBlockXSize * nBlockYSize * nDataTypeSize);
             return CE_Failure;
         }
 
@@ -196,11 +198,33 @@ CPLErr RasterliteBand::IReadBlock( int nBlockXOff, int nBlockYOff, void * pImage
         }
         const int nTileXSize = OGR_F_GetFieldAsInteger(hFeat, 2);
         const int nTileYSize = OGR_F_GetFieldAsInteger(hFeat, 3);
+        constexpr int MAX_INT_DIV_2 = std::numeric_limits<int>::max() / 2;
+        if( nTileXSize <= 0 || nTileXSize >= MAX_INT_DIV_2 ||
+            nTileYSize <= 0 || nTileYSize >= MAX_INT_DIV_2 )
+        {
+            CPLError(CE_Failure, CPLE_AppDefined, "invalid tile size");
+            OGR_F_Destroy(hFeat);
+            OGR_DS_ReleaseResultSet(poGDS->hDS, hSQLLyr);
+            memset(pImage, 0, nBlockXSize * nBlockYSize * nDataTypeSize);
+            return CE_Failure;
+        }
 
-        int nDstXOff = static_cast<int>(
-            ( oEnvelope.MinX - minx ) / poGDS->adfGeoTransform[1] + 0.5 );
-        int nDstYOff = static_cast<int>(
-            ( maxy - oEnvelope.MaxY ) / ( -poGDS->adfGeoTransform[5] ) + 0.5 );
+        const double dfDstXOff = ( oEnvelope.MinX - minx ) / poGDS->adfGeoTransform[1];
+        const double dfDstYOff = ( maxy - oEnvelope.MaxY ) / ( -poGDS->adfGeoTransform[5] );
+        constexpr int MIN_INT_DIV_2 = std::numeric_limits<int>::min() / 2;
+        if( !(dfDstXOff >= MIN_INT_DIV_2 &&
+              dfDstXOff <= MAX_INT_DIV_2) ||
+            !(dfDstYOff >= MIN_INT_DIV_2 &&
+              dfDstYOff <= MAX_INT_DIV_2) )
+        {
+            CPLError(CE_Failure, CPLE_AppDefined, "invalid geometry");
+            OGR_F_Destroy(hFeat);
+            OGR_DS_ReleaseResultSet(poGDS->hDS, hSQLLyr);
+            memset(pImage, 0, nBlockXSize * nBlockYSize * nDataTypeSize);
+            return CE_Failure;
+        }
+        int nDstXOff = static_cast<int>(dfDstXOff + 0.5);
+        int nDstYOff = static_cast<int>(dfDstYOff + 0.5);
 
         int nReqXSize = nTileXSize;
         int nReqYSize = nTileYSize;

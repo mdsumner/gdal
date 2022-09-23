@@ -764,9 +764,18 @@ RPFTOCSubDataset::CreateDataSetFromTocEntry( const char* openInformationName,
         (entry->seLong - entry->nwLong)
         / (entry->nHorizFrames * entry->horizInterval) + 0.5);
 
-    const int sizeY = static_cast<int>(
+    int sizeY = static_cast<int>(
         (entry->nwLat - entry->seLat)
         / (entry->nVertFrames * entry->vertInterval) + 0.5);
+
+    if ((EQUAL(entry->type, "CADRG") || (EQUAL(entry->type, "CIB"))))
+    {
+        // for CADRG and CIB the frame size is defined with 1536x1536
+        // CADRG: see MIL-C-89038: 3.5.2 a - Each frame shall comprise a rectangular array of 1536 by 1536 pixels
+        // CIB: see MIL-C-89041: 3.5.2 a - Each frame shall comprise a rectangular array of 1536 by 1536 pixels
+        sizeX = 1536;
+        sizeY = 1536;
+    }
 
     int nBlockXSize = 0;
     int nBlockYSize = 0;
@@ -785,7 +794,7 @@ RPFTOCSubDataset::CreateDataSetFromTocEntry( const char* openInformationName,
             /* Do a few sanity checks too */
             /* Ideally we should make these sanity checks now on ALL files, but it would be too slow */
             /* for large datasets. So these sanity checks will be done at the time we really need */
-            /* to access the file (see SanityCheckOK metho) */
+            /* to access the file (see SanityCheckOK method) */
             GDALDataset *poSrcDS = reinterpret_cast<GDALDataset *>(
                 GDALOpenShared( entry->frameEntries[i].fullFilePath,
                                 GA_ReadOnly ) );
@@ -800,10 +809,17 @@ RPFTOCSubDataset::CreateDataSetFromTocEntry( const char* openInformationName,
             ASSERT_CREATE_VRT((entry->horizInterval - geoTransf[GEOTRSFRM_WE_RES]) /
                                 entry->horizInterval < 0.01); /* X interval same as in TOC */
             ASSERT_CREATE_VRT((entry->vertInterval - (-geoTransf[GEOTRSFRM_NS_RES])) /
-                                entry->horizInterval < 0.01); /* Y interval same as in TOC */
+                                entry->vertInterval < 0.01); /* Y interval same as in TOC */
 
             const int ds_sizeX = poSrcDS->GetRasterXSize();
             const int ds_sizeY = poSrcDS->GetRasterYSize();
+            /* for polar zone use the sizes from the dataset */
+            if ((entry->zone[0] == '9') || (entry->zone[0] == 'J'))
+            {
+                sizeX = ds_sizeX;
+                sizeY = ds_sizeY;
+            }
+
             /* In the case the east longitude is 180, there's a great chance that it is in fact */
             /* truncated in the A.TOC. Thus, the only reliable way to find out the tile width, is to */
             /* read it from the tile dataset itself... */
@@ -812,6 +828,7 @@ RPFTOCSubDataset::CreateDataSetFromTocEntry( const char* openInformationName,
                 sizeX = ds_sizeX;
             else
                 ASSERT_CREATE_VRT(sizeX == ds_sizeX);
+
             ASSERT_CREATE_VRT(sizeY == ds_sizeY);
             poSrcDS->GetRasterBand(1)->GetBlockSize(&nBlockXSize, &nBlockYSize);
             ASSERT_CREATE_VRT(poSrcDS->GetRasterBand(1)->GetColorInterpretation() == GCI_PaletteIndex);

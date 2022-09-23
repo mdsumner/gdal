@@ -844,7 +844,8 @@ class netCDFDataset final: public GDALPamDataset
     void  SetProjectionFromVar( int nGroupId, int nVarId, bool bReadSRSOnly, const char * pszGivenGM, std::string*, nccfdriver::SGeometry_Reader*);
     void  SetProjectionFromVar( int nGroupId, int nVarId, bool bReadSRSOnly );
 
-    int ProcessCFGeolocation( int nGroupId, int nVarId );
+    int ProcessCFGeolocation( int nGroupId, int nVarId,
+                              std::string& osGeolocXNameOut, std::string& osGeolocYNameOut );
     CPLErr Set1DGeolocation( int nGroupId, int nVarId, const char *szDimName );
     double * Get1DGeolocation( const char *szDimName, int &nVarLen );
 
@@ -1088,6 +1089,13 @@ void NCDFWriteXYVarsAttributes(nccfdriver::netCDFVID& vcdf, int nVarXID, int nVa
                                       OGRSpatialReference* poSRS);
 int NCDFWriteSRSVariable(int cdfid, const OGRSpatialReference* poSRS,
                          char** ppszCFProjection, bool bWriteGDALTags, const std::string& = std::string());
+
+double NCDFGetDefaultNoDataValue( int nCdfId, int nVarId, int nVarType, bool& bGotNoData );
+#ifdef NETCDF_HAS_NC4
+int64_t NCDFGetDefaultNoDataValueAsInt64( int nCdfId, int nVarId, bool& bGotNoData );
+uint64_t NCDFGetDefaultNoDataValueAsUInt64( int nCdfId, int nVarId, bool& bGotNoData );
+#endif
+
 CPLErr NCDFGetAttr( int nCdfId, int nVarId, const char *pszAttrName,
                     double *pdfValue );
 CPLErr NCDFGetAttr( int nCdfId, int nVarId, const char *pszAttrName,
@@ -1124,5 +1132,8 @@ bool netCDFDatasetCreateTempFile( NetCDFFormatEnum eFormat,
                                          const char* pszTmpFilename,
                                          VSILFILE* fpSrc );
 #endif
+
+int GDAL_nc_open(const char* pszFilename, int nMode, int* pID);
+int GDAL_nc_close(int cdfid);
 
 #endif

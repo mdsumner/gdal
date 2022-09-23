@@ -540,8 +540,8 @@ int OGRAPISpyOpenTakeSnapshot( const char* pszName, int bUpdate )
                         osSrcDir, CPLGetFilename(*papszIter), nullptr);
                 CPLString osSnapshotWorkingFile = CPLFormFilename(
                         osWorkingDir, CPLGetFilename(*papszIter), nullptr);
-                CPLCopyFile( osSnapshotSrcFile, *papszIter );
-                CPLCopyFile( osSnapshotWorkingFile, *papszIter );
+                CPL_IGNORE_RET_VAL(CPLCopyFile( osSnapshotSrcFile, *papszIter ));
+                CPL_IGNORE_RET_VAL(CPLCopyFile( osSnapshotWorkingFile, *papszIter ));
                 fprintf(fpSpyFile, "shutil.copy('%s', '%s')\n",
                         osSnapshotSrcFile.c_str(),
                         osSnapshotWorkingFile.c_str());
@@ -935,6 +935,18 @@ void OGRAPISpy_L_CreateFeature( OGRLayerH hLayer, OGRFeatureH hFeat )
     OGRAPISpyFlushDefered();
     OGRAPISpyDumpFeature(hFeat);
     fprintf(fpSpyFile, "%s.CreateFeature(f)\n",
+            OGRAPISpyGetLayerVar(hLayer).c_str());
+    // In case layer defn is changed afterwards.
+    fprintf(fpSpyFile, "f = None\n");
+    OGRAPISpyFileClose();
+}
+
+void OGRAPISpy_L_UpsertFeature( OGRLayerH hLayer, OGRFeatureH hFeat )
+{
+    CPLMutexHolderD(&hMutex);
+    OGRAPISpyFlushDefered();
+    OGRAPISpyDumpFeature(hFeat);
+    fprintf(fpSpyFile, "%s.UpsertFeature(f)\n",
             OGRAPISpyGetLayerVar(hLayer).c_str());
     // In case layer defn is changed afterwards.
     fprintf(fpSpyFile, "f = None\n");

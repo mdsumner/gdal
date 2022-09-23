@@ -41,6 +41,11 @@ check_include_file("dlfcn.h" HAVE_DLFCN_H)
 check_type_size("int" SIZEOF_INT)
 check_type_size("unsigned long" SIZEOF_UNSIGNED_LONG)
 check_type_size("void*" SIZEOF_VOIDP)
+check_type_size("size_t" SIZEOF_SIZE_T)
+
+if(MSVC AND NOT BUILD_SHARED_LIBS)
+  set(CPL_DISABLE_DLL 1)
+endif()
 
 if (MSVC)
   set(HAVE_VSNPRINTF 1)
@@ -115,6 +120,13 @@ else ()
         int main() { return (mremap(0,0,0,0,0)); }
         "
     HAVE_5ARGS_MREMAP)
+
+  check_c_source_compiles(
+    "
+        #include <pthread.h>
+        int main() { pthread_atfork(0,0,0); 0; }
+        "
+    HAVE_PTHREAD_ATFORK)
 
   check_include_file("sys/stat.h" HAVE_SYS_STAT_H)
   if (${CMAKE_SYSTEM} MATCHES "Linux")
@@ -232,6 +244,29 @@ else ()
   else ()
     set(VSI_FTRUNCATE64 "ftruncate")
   endif ()
+
+  # For some reason, above tests detect xxxx64 symbols for iOS, which are not
+  # available at build time.
+  # This is also necessary for Mac Catalyst builds.
+  # Cf https://lists.osgeo.org/pipermail/gdal-dev/2022-August/056174.html
+  if (${CMAKE_SYSTEM_NAME} MATCHES "iOS" OR ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
+    set(VSI_FOPEN64 "fopen")
+    set(VSI_FTRUNCATE64 "ftruncate")
+    set(VSI_FTELL64 "ftell")
+    set(VSI_FSEEK64 "fseek")
+    set(VSI_STAT64 "stat")
+    set(VSI_STAT64_T "stat")
+    unset(HAVE_FOPEN64)
+    unset(HAVE_FOPEN64 CACHE)
+    unset(HAVE_FTRUNCATE64)
+    unset(HAVE_FTRUNCATE64 CACHE)
+    unset(HAVE_FTELL64)
+    unset(HAVE_FTELL64 CACHE)
+    unset(HAVE_FSEEK64)
+    unset(HAVE_FSEEK64 CACHE)
+    unset(HAVE_STATVFS64)
+    unset(HAVE_STATVFS64 CACHE)
+  endif()
 
   set(UNIX_STDIO_64 TRUE)
 

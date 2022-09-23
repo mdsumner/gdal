@@ -277,8 +277,13 @@ static CPLString VSICurlGetURLFromFilename(const char* pszFilename,
                                            bool* pbUseRedirectURLIfNoQueryStringParams,
                                            bool* pbListDir,
                                            bool* pbEmptyDir,
-                                           char*** ppapszHTTPOptions)
+                                           char*** ppapszHTTPOptions,
+                                           bool* pbPlanetaryComputerURLSigning,
+                                           char** ppszPlanetaryComputerCollection)
 {
+    if( ppszPlanetaryComputerCollection )
+        *ppszPlanetaryComputerCollection = nullptr;
+
     if( !STARTS_WITH(pszFilename, "/vsicurl/") &&
         !STARTS_WITH(pszFilename, "/vsicurl?") )
         return pszFilename;
@@ -367,6 +372,19 @@ static CPLString VSICurlGetURLFromFilename(const char* pszFilename,
                 {
                     osURL = pszValue;
                 }
+                else if( EQUAL(pszKey, "pc_url_signing") )
+                {
+                    if( pbPlanetaryComputerURLSigning )
+                        *pbPlanetaryComputerURLSigning = CPLTestBool(pszValue);
+                }
+                else if( EQUAL(pszKey, "pc_collection") )
+                {
+                    if( ppszPlanetaryComputerCollection )
+                    {
+                        CPLFree(*ppszPlanetaryComputerCollection);
+                        *ppszPlanetaryComputerCollection = CPLStrdup(pszValue);
+                    }
+                }
                 else
                 {
                     CPLError(CE_Warning, CPLE_NotSupported,
@@ -413,13 +431,19 @@ VSICurlHandle::VSICurlHandle( VSICurlFilesystemHandlerBase* poFSIn,
     }
     else
     {
+        char* pszPCCollection = nullptr;
         m_pszURL = CPLStrdup(VSICurlGetURLFromFilename(pszFilename,
                                                        &m_nMaxRetry,
                                                        &m_dfRetryDelay,
                                                        &m_bUseHead,
                                                        &m_bUseRedirectURLIfNoQueryStringParams,
                                                        nullptr, nullptr,
-                                                       &m_papszHTTPOptions));
+                                                       &m_papszHTTPOptions,
+                                                       &m_bPlanetaryComputerURLSigning,
+                                                       &pszPCCollection));
+        if( pszPCCollection )
+            m_osPlanetaryComputerCollection = pszPCCollection;
+        CPLFree(pszPCCollection);
     }
 
     m_bCached = poFSIn->AllowCachedDataFor(pszFilename);
@@ -688,6 +712,13 @@ size_t VSICurlHandleWriteFunc( void *buffer, size_t count,
                 }
                 else
 #endif //!CURL_AT_LEAST_VERSION(7,54,0)
+                if( psStruct->bInterruptIfNonErrorPayload &&
+                    psStruct->nHTTPCode >= 400 )
+                {
+                    psStruct->bInterrupted = true;
+                    return 0;
+                }
+                else
                 {
                     // Detect servers that don't support range downloading.
                     if( psStruct->nHTTPCode == 200 &&
@@ -865,6 +896,172 @@ void VSICURLResetHeaderAndWriterFunctions(CURL* hCurlHandle)
 }
 
 /************************************************************************/
+/*                          ParseSimpleJson()                           */
+/*                                                                      */
+/*      Return a string list of name/value pairs extracted from a       */
+/*      JSON doc.  The Planetary Computer returns simple JSON           */
+/*      responses.  The parsing as done currently is very fragile       */
+/*      and depends on JSON documents being in a very very simple       */
+/*      form.                                                           */
+/************************************************************************/
+
+static CPLStringList ParseSimpleJson(const char *pszJson)
+
+{
+/* -------------------------------------------------------------------- */
+/*      We are expecting simple documents like the following with no    */
+/*      hierarchy or complex structure.                                 */
+/* -------------------------------------------------------------------- */
+/*
+    {"msft:expiry":"2022-08-17T17:46:34Z","href":"https://naipeuwest.blob.core.windows.net/naip/v002/ks/2019/ks_60cm_2019/39099/m_3909907_ne_14_060_20190709.tif?..."}
+*/
+
+    CPLStringList oWords(
+        CSLTokenizeString2(pszJson, " \n\t,:{}", CSLT_HONOURSTRINGS ));
+    CPLStringList oNameValue;
+
+    for( int i=0; i < oWords.size(); i += 2 )
+    {
+        oNameValue.SetNameValue(oWords[i], oWords[i+1]);
+    }
+
+    return oNameValue;
+}
+
+/************************************************************************/
+/*                        Iso8601ToUnixTime()                           */
+/************************************************************************/
+
+static bool Iso8601ToUnixTime(const char* pszDT, GIntBig* pnUnixTime)
+{
+    int nYear;
+    int nMonth;
+    int nDay;
+    int nHour;
+    int nMinute;
+    int nSecond;
+    if( sscanf(pszDT, "%04d-%02d-%02dT%02d:%02d:%02d",
+                &nYear, &nMonth, &nDay, &nHour, &nMinute, &nSecond) == 6 )
+    {
+        struct tm brokendowntime;
+        brokendowntime.tm_year = nYear - 1900;
+        brokendowntime.tm_mon = nMonth - 1;
+        brokendowntime.tm_mday = nDay;
+        brokendowntime.tm_hour = nHour;
+        brokendowntime.tm_min = nMinute;
+        brokendowntime.tm_sec = nSecond;
+        *pnUnixTime = CPLYMDHMSToUnixTime(&brokendowntime);
+        return true;
+    }
+    return false;
+}
+
+/************************************************************************/
+/*                   ManagePlanetaryComputerSigning()                   */
+/************************************************************************/
+
+void VSICurlHandle::ManagePlanetaryComputerSigning()
+{
+    if( !m_bPlanetaryComputerURLSigning )
+        return;
+
+    // Take global lock
+    static std::mutex goMutex;
+    std::lock_guard<std::mutex> oLock(goMutex);
+
+    struct PCSigningInfo
+    {
+        std::string osQueryString{};
+        GIntBig     nExpireTimestamp = 0;
+    };
+
+    PCSigningInfo sSigningInfo;
+    constexpr int knExpirationDelayMargin = 60;
+
+    if( !m_osPlanetaryComputerCollection.empty() )
+    {
+        // key is the name of a collection
+        static lru11::Cache<std::string, PCSigningInfo> goCacheCollection{1024};
+
+        if( goCacheCollection.tryGet(m_osPlanetaryComputerCollection, sSigningInfo) &&
+            time(nullptr) + knExpirationDelayMargin <= sSigningInfo.nExpireTimestamp )
+        {
+            m_osQueryString = sSigningInfo.osQueryString;
+        }
+        else
+        {
+            const auto psResult = CPLHTTPFetch(
+                (std::string(CPLGetConfigOption(
+                    "VSICURL_PC_SAS_TOKEN_URL", "https://planetarycomputer.microsoft.com/api/sas/v1/token/")) +
+                     m_osPlanetaryComputerCollection).c_str(),
+                nullptr);
+            if( psResult )
+            {
+                const auto aosKeyVals = ParseSimpleJson(reinterpret_cast<const char*>(psResult->pabyData));
+                const char* pszToken = aosKeyVals.FetchNameValue("token");
+                if( pszToken )
+                {
+                    m_osQueryString = '?';
+                    m_osQueryString += pszToken;
+
+                    sSigningInfo.osQueryString = m_osQueryString;
+                    sSigningInfo.nExpireTimestamp = 0;
+                    const char* pszExpiry = aosKeyVals.FetchNameValue("msft:expiry");
+                    if( pszExpiry )
+                    {
+                        Iso8601ToUnixTime(pszExpiry, &sSigningInfo.nExpireTimestamp);
+                    }
+                    goCacheCollection.insert(m_osPlanetaryComputerCollection, sSigningInfo);
+
+                    CPLDebug("VSICURL", "Got token from Planetary Computer: %s", m_osQueryString.c_str());
+                }
+                CPLHTTPDestroyResult(psResult);
+            }
+        }
+    }
+    else
+    {
+        // key is a URL
+        static lru11::Cache<std::string, PCSigningInfo> goCacheURL{1024};
+
+        if( goCacheURL.tryGet(m_pszURL, sSigningInfo) &&
+            time(nullptr) + knExpirationDelayMargin <= sSigningInfo.nExpireTimestamp )
+        {
+            m_osQueryString = sSigningInfo.osQueryString;
+        }
+        else
+        {
+            const auto psResult = CPLHTTPFetch(
+                (std::string(CPLGetConfigOption(
+                    "VSICURL_PC_SAS_SIGN_HREF_URL", "https://planetarycomputer.microsoft.com/api/sas/v1/sign?href=")) +
+                    m_pszURL).c_str(),
+                nullptr);
+            if( psResult )
+            {
+                const auto aosKeyVals = ParseSimpleJson(reinterpret_cast<const char*>(psResult->pabyData));
+                const char* pszHref = aosKeyVals.FetchNameValue("href");
+                if( pszHref && STARTS_WITH(pszHref, m_pszURL) )
+                {
+                    m_osQueryString = pszHref + strlen(m_pszURL);
+
+                    sSigningInfo.osQueryString = m_osQueryString;
+                    sSigningInfo.nExpireTimestamp = 0;
+                    const char* pszExpiry = aosKeyVals.FetchNameValue("msft:expiry");
+                    if( pszExpiry )
+                    {
+                        Iso8601ToUnixTime(pszExpiry, &sSigningInfo.nExpireTimestamp);
+                    }
+                    goCacheURL.insert(m_pszURL, sSigningInfo);
+
+                    CPLDebug("VSICURL", "Got signature from Planetary Computer: %s", m_osQueryString.c_str());
+                }
+                CPLHTTPDestroyResult(psResult);
+            }
+        }
+    }
+}
+
+/************************************************************************/
 /*                     GetFileSizeOrHeaders()                           */
 /************************************************************************/
 
@@ -880,6 +1077,8 @@ vsi_l_offset VSICurlHandle::GetFileSizeOrHeaders( bool bSetError, bool bGetHeade
     oFileProp.bHasComputedFileSize = true;
 
     CURLM* hCurlMultiHandle = poFS->GetCurlMultiHandleFor(m_pszURL);
+
+    ManagePlanetaryComputerSigning();
 
     CPLString osURL(m_pszURL + m_osQueryString);
     bool bRetryWithGet = false;
@@ -926,7 +1125,7 @@ retry:
              VSICurlIsS3LikeSignedURL(osURL) ||
              !m_bUseHead )
     {
-        sWriteFuncData.bInterrupted = true;
+        sWriteFuncData.bInterruptIfNonErrorPayload = true;
         osVerb = "GET";
     }
     else
@@ -1002,14 +1201,32 @@ retry:
         long response_code = 0;
         curl_easy_getinfo(hCurlHandle, CURLINFO_HTTP_CODE, &response_code);
 
-        if( ENABLE_DEBUG && szCurlErrBuf[0] != '\0' )
+        bool bAlreadyLogged = false;
+        if( response_code >= 400 && szCurlErrBuf[0] == '\0' )
         {
+            const bool bLogResponse = CPLTestBool(
+                CPLGetConfigOption("CPL_CURL_VERBOSE", "NO"));
+            if( bLogResponse && sWriteFuncData.pBuffer )
+            {
+                const char* pszErrorMsg = static_cast<const char*>(sWriteFuncData.pBuffer);
+                bAlreadyLogged = true;
+                CPLDebug(poFS->GetDebugKey(),
+                         "GetFileSize(%s): response_code=%d, server error msg=%s",
+                         osURL.c_str(),
+                         static_cast<int>(response_code),
+                         pszErrorMsg[0] ? pszErrorMsg : "(no message provided)");
+            }
+        }
+        else if( szCurlErrBuf[0] != '\0' )
+        {
+            bAlreadyLogged = true;
             CPLDebug(poFS->GetDebugKey(),
-                     "GetFileSize(%s): response_code=%d, msg=%s",
+                     "GetFileSize(%s): response_code=%d, curl error msg=%s",
                      osURL.c_str(),
                      static_cast<int>(response_code),
                      szCurlErrBuf);
         }
+
 
         CPLString osEffectiveURL;
         {
@@ -1314,7 +1531,7 @@ retry:
             oFileProp.bIsDirectory = true;
         }
 
-        if( ENABLE_DEBUG && szCurlErrBuf[0] == '\0' )
+        if( !bAlreadyLogged )
         {
             CPLDebug(poFS->GetDebugKey(),
                      "GetFileSize(%s)=" CPL_FRMT_GUIB
@@ -1410,6 +1627,8 @@ std::string VSICurlHandle::DownloadRegion( const vsi_l_offset startOffset,
         return std::string();
 
     CURLM* hCurlMultiHandle = poFS->GetCurlMultiHandleFor(m_pszURL);
+
+    ManagePlanetaryComputerSigning();
 
     bool bHasExpired = false;
     CPLString osURL(GetRedirectURLIfValid(bHasExpired));
@@ -1947,6 +2166,8 @@ int VSICurlHandle::ReadMultiRange( int const nRanges, void ** const ppData,
         return VSIVirtualHandle::ReadMultiRange(
                                     nRanges, ppData, panOffsets, panSizes);
     }
+
+    ManagePlanetaryComputerSigning();
 
     bool bHasExpired = false;
     CPLString osURL(GetRedirectURLIfValid(bHasExpired));
@@ -3170,7 +3391,8 @@ VSIVirtualHandle* VSICurlFilesystemHandlerBase::Open( const char *pszFilename,
     bool bEmptyDir = false;
     CPL_IGNORE_RET_VAL(
         VSICurlGetURLFromFilename(pszFilename, nullptr, nullptr, nullptr,
-                                  nullptr, &bListDir, &bEmptyDir, nullptr));
+                                  nullptr, &bListDir, &bEmptyDir, nullptr,
+                                  nullptr, nullptr));
 
     const char* pszOptionVal =
         CPLGetConfigOption( "GDAL_DISABLE_READDIR_ON_OPEN", "NO" );
@@ -3425,7 +3647,8 @@ char** VSICurlFilesystemHandlerBase::ParseHTMLFileList( const char* pszFilename,
     *pbGotFileList = false;
 
     CPLString osURL(VSICurlGetURLFromFilename(pszFilename, nullptr, nullptr, nullptr,
-                                              nullptr, nullptr, nullptr, nullptr));
+                                              nullptr, nullptr, nullptr, nullptr,
+                                              nullptr, nullptr));
     const char* pszDir = nullptr;
     if( STARTS_WITH_CI(osURL, "http://") )
         pszDir = strchr(osURL.c_str() + strlen("http://"), '/');
@@ -3789,7 +4012,9 @@ static bool VSICurlParseFullFTPLine( char* pszLine,
 CPLString
 VSICurlFilesystemHandlerBase::GetURLFromFilename( const CPLString& osFilename )
 {
-    return VSICurlGetURLFromFilename(osFilename, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+    return VSICurlGetURLFromFilename(osFilename, nullptr, nullptr, nullptr,
+                                     nullptr, nullptr, nullptr, nullptr,
+                                     nullptr, nullptr);
 }
 
 /************************************************************************/
@@ -3821,7 +4046,8 @@ char** VSICurlFilesystemHandlerBase::GetFileList(const char *pszDirname,
     bool bEmptyDir = false;
     CPLString osURL(
         VSICurlGetURLFromFilename(pszDirname, nullptr, nullptr, nullptr, nullptr,
-                                  &bListDir, &bEmptyDir, nullptr));
+                                  &bListDir, &bEmptyDir, nullptr,
+                                  nullptr, nullptr));
     if( bEmptyDir )
     {
         *pbGotFileList = true;
@@ -4152,7 +4378,8 @@ int VSICurlFilesystemHandlerBase::Stat( const char *pszFilename,
     bool bEmptyDir = false;
     CPLString osURL(
         VSICurlGetURLFromFilename(pszFilename, nullptr, nullptr, nullptr, nullptr,
-                                  &bListDir, &bEmptyDir, nullptr));
+                                  &bListDir, &bEmptyDir, nullptr,
+                                  nullptr, nullptr));
 
     const char* pszOptionVal =
         CPLGetConfigOption( "GDAL_DISABLE_READDIR_ON_OPEN", "NO" );

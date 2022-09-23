@@ -120,14 +120,6 @@ public:
 
     virtual double GetMinimum( int nXSize, int nYSize, int *pbSuccess ) = 0;
     virtual double GetMaximum( int nXSize, int nYSize, int *pbSuccess ) = 0;
-    virtual CPLErr ComputeRasterMinMax( int nXSize, int nYSize, int bApproxOK,
-                                        double* adfMinMax ) = 0;
-    virtual CPLErr ComputeStatistics( int nXSize, int nYSize,
-                                      int bApproxOK,
-                                      double *pdfMin, double *pdfMax,
-                                      double *pdfMean, double *pdfStdDev,
-                                      GDALProgressFunc pfnProgress,
-                                      void *pProgressData ) = 0;
     virtual CPLErr  GetHistogram( int nXSize, int nYSize,
                                   double dfMin, double dfMax,
                                   int nBuckets, GUIntBig * panHistogram,
@@ -484,6 +476,8 @@ class CPL_DLL VRTRasterBand CPL_NON_FINAL: public GDALRasterBand
 
     CPL_DISALLOW_COPY_ASSIGN(VRTRasterBand)
 
+    bool            IsNoDataValueInDataTypeRange() const;
+
   public:
 
                     VRTRasterBand();
@@ -581,6 +575,8 @@ class CPL_DLL VRTSourcedRasterBand CPL_NON_FINAL: public VRTRasterBand
     int            m_nSkipBufferInitialization = -1;
 
     bool           CanUseSourcesMinMaxImplementations();
+
+    bool           IsMosaicOfNonOverlappingSimpleSourcesOfFullRasterNoResAndTypeChange(bool bAllowMaxValAdjustment) const;
 
     CPL_DISALLOW_COPY_ASSIGN(VRTSourcedRasterBand)
 
@@ -897,6 +893,8 @@ class VRTDriver final: public GDALDriver
 {
     CPL_DISALLOW_COPY_ASSIGN(VRTDriver)
 
+    std::map<std::string, VRTSourceParser> m_oMapSourceParser{};
+
   public:
                  VRTDriver();
     virtual ~VRTDriver();
@@ -1009,14 +1007,6 @@ public:
 
     virtual double GetMinimum( int nXSize, int nYSize, int *pbSuccess ) override;
     virtual double GetMaximum( int nXSize, int nYSize, int *pbSuccess ) override;
-    virtual CPLErr ComputeRasterMinMax( int nXSize, int nYSize, int bApproxOK,
-                                        double* adfMinMax ) override;
-    virtual CPLErr ComputeStatistics( int nXSize, int nYSize,
-                                      int bApproxOK,
-                                      double *pdfMin, double *pdfMax,
-                                      double *pdfMean, double *pdfStdDev,
-                                      GDALProgressFunc pfnProgress,
-                                      void *pProgressData ) override;
     virtual CPLErr  GetHistogram( int nXSize, int nYSize,
                                   double dfMin, double dfMax,
                                   int nBuckets, GUIntBig * panHistogram,
@@ -1073,14 +1063,6 @@ public:
 
     virtual double GetMinimum( int nXSize, int nYSize, int *pbSuccess ) override;
     virtual double GetMaximum( int nXSize, int nYSize, int *pbSuccess ) override;
-    virtual CPLErr ComputeRasterMinMax( int nXSize, int nYSize, int bApproxOK,
-                                        double* adfMinMax ) override;
-    virtual CPLErr ComputeStatistics( int nXSize, int nYSize,
-                                      int bApproxOK,
-                                      double *pdfMin, double *pdfMax,
-                                      double *pdfMean, double *pdfStdDev,
-                                      GDALProgressFunc pfnProgress,
-                                      void *pProgressData ) override;
     virtual CPLErr  GetHistogram( int nXSize, int nYSize,
                                   double dfMin, double dfMax,
                                   int nBuckets, GUIntBig * panHistogram,
@@ -1106,7 +1088,6 @@ typedef enum
 class CPL_DLL VRTComplexSource CPL_NON_FINAL: public VRTSimpleSource
 {
     CPL_DISALLOW_COPY_ASSIGN(VRTComplexSource)
-    bool           AreValuesUnchanged() const;
 
 protected:
     VRTComplexSourceScaling m_eScalingType;
@@ -1149,14 +1130,6 @@ public:
 
     virtual double GetMinimum( int nXSize, int nYSize, int *pbSuccess ) override;
     virtual double GetMaximum( int nXSize, int nYSize, int *pbSuccess ) override;
-    virtual CPLErr ComputeRasterMinMax( int nXSize, int nYSize, int bApproxOK,
-                                        double* adfMinMax ) override;
-    virtual CPLErr ComputeStatistics( int nXSize, int nYSize,
-                                      int bApproxOK,
-                                      double *pdfMin, double *pdfMax,
-                                      double *pdfMean, double *pdfStdDev,
-                                      GDALProgressFunc pfnProgress,
-                                      void *pProgressData ) override;
     virtual CPLErr  GetHistogram( int nXSize, int nYSize,
                                   double dfMin, double dfMax,
                                   int nBuckets, GUIntBig * panHistogram,
@@ -1168,6 +1141,8 @@ public:
     virtual CPLErr XMLInit( CPLXMLNode *, const char *,
                             std::map<CPLString, GDALDataset*>& ) override;
     virtual const char* GetType() override { return "ComplexSource"; }
+
+    bool           AreValuesUnchanged() const;
 
     double  LookupValue( double dfInput );
 
@@ -1294,14 +1269,6 @@ public:
 
     virtual double GetMinimum( int nXSize, int nYSize, int *pbSuccess ) override;
     virtual double GetMaximum( int nXSize, int nYSize, int *pbSuccess ) override;
-    virtual CPLErr ComputeRasterMinMax( int nXSize, int nYSize, int bApproxOK,
-                                        double* adfMinMax ) override;
-    virtual CPLErr ComputeStatistics( int nXSize, int nYSize,
-                                      int bApproxOK,
-                                      double *pdfMin, double *pdfMax,
-                                      double *pdfMean, double *pdfStdDev,
-                                      GDALProgressFunc pfnProgress,
-                                      void *pProgressData ) override;
     virtual CPLErr  GetHistogram( int nXSize, int nYSize,
                                   double dfMin, double dfMax,
                                   int nBuckets, GUIntBig * panHistogram,

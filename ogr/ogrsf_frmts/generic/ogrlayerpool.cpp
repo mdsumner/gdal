@@ -29,6 +29,7 @@
 #ifndef DOXYGEN_SKIP
 
 #include "ogrlayerpool.h"
+#include "ogr_recordbatch.h"
 
 CPL_CVSID("$Id$")
 
@@ -288,6 +289,31 @@ OGRFeature *OGRProxiedLayer::GetNextFeature()
 }
 
 /************************************************************************/
+/*                            GDALDataset()                             */
+/************************************************************************/
+
+GDALDataset *OGRProxiedLayer::GetDataset()
+{
+    if( poUnderlyingLayer == nullptr && !OpenUnderlyingLayer() ) return nullptr;
+    return poUnderlyingLayer->GetDataset();
+}
+
+/************************************************************************/
+/*                          GetArrowStream()                            */
+/************************************************************************/
+
+bool OGRProxiedLayer::GetArrowStream(struct ArrowArrayStream* out_stream,
+                                     CSLConstList papszOptions)
+{
+    if( poUnderlyingLayer == nullptr && !OpenUnderlyingLayer() )
+    {
+        memset(out_stream, 0, sizeof(*out_stream));
+        return false;
+    }
+    return poUnderlyingLayer->GetArrowStream(out_stream, papszOptions);
+}
+
+/************************************************************************/
 /*                           SetNextByIndex()                           */
 /************************************************************************/
 
@@ -325,6 +351,16 @@ OGRErr      OGRProxiedLayer::ICreateFeature( OGRFeature *poFeature )
 {
     if( poUnderlyingLayer == nullptr && !OpenUnderlyingLayer() ) return OGRERR_FAILURE;
     return poUnderlyingLayer->CreateFeature(poFeature);
+}
+
+/************************************************************************/
+/*                            IUpsertFeature()                          */
+/************************************************************************/
+
+OGRErr      OGRProxiedLayer::IUpsertFeature( OGRFeature* poFeature )
+{
+   if ( poUnderlyingLayer == nullptr && !OpenUnderlyingLayer() ) return OGRERR_FAILURE;
+   return poUnderlyingLayer->UpsertFeature(poFeature);
 }
 
 /************************************************************************/
@@ -477,6 +513,16 @@ OGRErr      OGRProxiedLayer::AlterFieldDefn( int iField, OGRFieldDefn* poNewFiel
 {
     if( poUnderlyingLayer == nullptr && !OpenUnderlyingLayer() ) return OGRERR_FAILURE;
     return poUnderlyingLayer->AlterFieldDefn(iField, poNewFieldDefn, nFlagsIn);
+}
+
+/************************************************************************/
+/*                         AlterGeomFieldDefn()                         */
+/************************************************************************/
+
+OGRErr      OGRProxiedLayer::AlterGeomFieldDefn( int iGeomField, const OGRGeomFieldDefn* poNewGeomFieldDefn, int nFlagsIn )
+{
+    if( poUnderlyingLayer == nullptr && !OpenUnderlyingLayer() ) return OGRERR_FAILURE;
+    return poUnderlyingLayer->AlterGeomFieldDefn(iGeomField, poNewGeomFieldDefn, nFlagsIn);
 }
 
 /************************************************************************/

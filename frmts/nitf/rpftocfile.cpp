@@ -306,25 +306,51 @@ RPFToc* RPFTOCReadFromBuffer(const char* pszFilename, VSILFILE* fp, const char* 
             return nullptr;
         }
 
-        if( toc->entries[i].vertInterval <= 1e-10 ||
+        // do some basic plausibility checks for all entries
+        if (toc->entries[i].vertInterval <= 1e-10 ||
             !CPLIsFinite(toc->entries[i].vertInterval) ||
             toc->entries[i].horizInterval <= 1e-10 ||
             !CPLIsFinite(toc->entries[i].horizInterval) ||
-            !(fabs(toc->entries[i].seLong) <= 360.0) ||
-            !(fabs(toc->entries[i].nwLong) <= 360.0) ||
-            !(fabs(toc->entries[i].nwLat) <= 90.0) ||
-            !(fabs(toc->entries[i].seLat) <= 90.0) ||
-            toc->entries[i].seLong < toc->entries[i].nwLong ||
-            toc->entries[i].nwLat < toc->entries[i].seLat ||
             toc->entries[i].nHorizFrames == 0 ||
             toc->entries[i].nVertFrames == 0 ||
-            toc->entries[i].nHorizFrames > INT_MAX / toc->entries[i].nVertFrames )
+            toc->entries[i].nHorizFrames > INT_MAX / toc->entries[i].nVertFrames)
         {
             CPLError(CE_Failure, CPLE_FileIO, "Invalid TOC entry");
             toc->entries[i].nVertFrames = 0;
             toc->entries[i].nHorizFrames = 0;
             RPFTOCFree(toc);
             return nullptr;
+        }
+
+        // Overview has ZONE 'R' and Legend ZONE 'D' but because the Zone 'D' is also a valid
+        // Zone we need an additional check. -> In all cases of Overview/Legend the values of
+        // the BoundingBox are equal so we simply check here that NW == SE is. 
+        toc->entries[i].isOverviewOrLegend =
+            (toc->entries[i].zone[0] == 'R' ||  // Overview
+                (toc->entries[i].zone[0] == 'D' &&  // Legend
+                    memcmp(&(toc->entries[i].seLong), &(toc->entries[i].nwLong), sizeof(toc->entries[i].nwLong)) == 0 &&
+                    memcmp(&(toc->entries[i].seLat), &(toc->entries[i].nwLat), sizeof(toc->entries[i].nwLat)) == 0));
+
+        bool isPolarZone = (toc->entries[i].zone[0] == '9') || (toc->entries[i].zone[0] == 'J');
+
+        // make additional checks of the bounding for charts (without Legends and Overviews)
+        if (!toc->entries[i].isOverviewOrLegend)
+        {
+            if (!(fabs(toc->entries[i].seLong) <= 360.0) ||
+                !(fabs(toc->entries[i].nwLong) <= 360.0) ||
+                !(fabs(toc->entries[i].nwLat) <= 90.0) ||
+                !(fabs(toc->entries[i].seLat) <= 90.0) ||
+                // check only for non-polar zones, because the values are not always correct here
+                (!isPolarZone && (
+                    toc->entries[i].seLong < toc->entries[i].nwLong ||
+                    toc->entries[i].nwLat < toc->entries[i].seLat)))
+            {
+                CPLError(CE_Failure, CPLE_FileIO, "Invalid TOC entry");
+                toc->entries[i].nVertFrames = 0;
+                toc->entries[i].nHorizFrames = 0;
+                RPFTOCFree(toc);
+                return nullptr;
+            }
         }
 
         // TODO: We could probably use another data structure, like a list,
@@ -523,17 +549,14 @@ RPFToc* RPFTOCReadFromBuffer(const char* pszFilename, VSILFILE* fp, const char* 
         frameEntry->filename[12] = '\0';
         bOK &= strlen(frameEntry->filename) > 0;
 
-        /* Check if the filename is an overview or legend */
-        for( int j = 0; j < 12; j++ )
+        // Check (case insensitive) if the filename is an overview or legend
+        // some CADRG maps have legend name smaller than 8.3 then the extension
+        // has blanks (0x20) at the end -> check only the first 3 letters of the extension.
+        const char* fileExt = CPLGetExtension(frameEntry->filename);
+        if (EQUALN(fileExt, "ovr", 3) ||
+            EQUALN(fileExt, "lgd", 3))
         {
-            if (strcmp(&(frameEntry->filename[j]),".OVR") == 0 ||
-                strcmp(&(frameEntry->filename[j]),".ovr") == 0 ||
-                strcmp(&(frameEntry->filename[j]),".LGD") == 0 ||
-                strcmp(&(frameEntry->filename[j]),".lgd") == 0)
-            {
-                entry->isOverviewOrLegend = TRUE;
-                break;
-            }
+            entry->isOverviewOrLegend = TRUE;
         }
 
         /* Extract series code */

@@ -53,6 +53,7 @@
 #include "cpl_quad_tree.h"
 #include "cpl_worker_thread_pool.h"
 
+#include <atomic>
 #include <fstream>
 #include <string>
 
@@ -2862,7 +2863,7 @@ namespace tut
     void object::test<40>()
     {
         CPLWorkerThreadPool oPool;
-        ensure(oPool.Setup(2, nullptr, nullptr));
+        ensure(oPool.Setup(2, nullptr, nullptr, false));
 
         const auto myJob = [](void* pData)
         {
@@ -3705,6 +3706,253 @@ namespace tut
         CPLFree(pszRet);
         CPLFree(pszExpected);
 #endif
+    }
+
+    // VERY MINIMAL testing of VSI plugin functionality
+    template<>
+    template<>
+    void object::test<56>()
+    {
+        auto psCallbacks = VSIAllocFilesystemPluginCallbacksStruct();
+        psCallbacks->open = []( void *pUserData, const char *pszFilename, const char *pszAccess ) -> void*
+        {
+            (void)pUserData;
+            if( strcmp(pszFilename, "test") == 0 && strcmp(pszAccess, "rb") == 0 )
+                return const_cast<char*>("ok");
+            return nullptr;
+        };
+        ensure_equals(VSIInstallPluginHandler("/vsimyplugin/", psCallbacks), 0);
+        VSIFreeFilesystemPluginCallbacksStruct(psCallbacks);
+        VSILFILE* fp = VSIFOpenL("/vsimyplugin/test", "rb");
+        ensure(fp != nullptr);
+        VSIFCloseL(fp);
+        ensure(VSIFOpenL("/vsimyplugin/i_dont_exist", "rb") == nullptr);
+    }
+
+    // Test CPLIsASCII()
+    template<>
+    template<>
+    void object::test<57>()
+    {
+        ensure(CPLIsASCII("foo", 3));
+        ensure(CPLIsASCII("foo", static_cast<size_t>(-1)));
+        ensure(!CPLIsASCII("\xFF", 1));
+    }
+
+    // Test VSIIsLocal()
+    template<>
+    template<>
+    void object::test<58>()
+    {
+        ensure(VSIIsLocal("/vsimem/"));
+        ensure(VSIIsLocal("/vsigzip//vsimem/tmp.gz"));
+#ifdef HAVE_CURL
+        ensure(!VSIIsLocal("/vsicurl/http://example.com"));
+#endif
+        VSIStatBufL sStat;
+#ifdef _WIN32
+        if( VSIStatL("c:\\", &sStat) == 0 )
+            ensure(VSIIsLocal("c:\\i_do_not_exist"));
+#else
+        if( VSIStatL("/tmp", &sStat) == 0 )
+            ensure(VSIIsLocal("/tmp/i_do_not_exist"));
+#endif
+    }
+
+    // Test VSISupportsSequentialWrite()
+    template<>
+    template<>
+    void object::test<59>()
+    {
+        ensure(VSISupportsSequentialWrite("/vsimem/", false));
+#ifdef HAVE_CURL
+        ensure(!VSISupportsSequentialWrite("/vsicurl/http://example.com", false));
+        ensure(VSISupportsSequentialWrite("/vsis3/test_bucket/", false));
+#endif
+        ensure(VSISupportsSequentialWrite("/vsigzip//vsimem/tmp.gz", false));
+#ifdef HAVE_CURL
+        ensure(!VSISupportsSequentialWrite("/vsigzip//vsicurl/http://example.com/tmp.gz", false));
+#endif
+        VSIStatBufL sStat;
+#ifdef _WIN32
+        if( VSIStatL("c:\\", &sStat) == 0 )
+            ensure(VSISupportsSequentialWrite("c:\\", false));
+#else
+        if( VSIStatL("/tmp", &sStat) == 0 )
+            ensure(VSISupportsSequentialWrite("/tmp/i_do_not_exist", false));
+#endif
+    }
+
+    // Test VSISupportsRandomWrite()
+    template<>
+    template<>
+    void object::test<60>()
+    {
+        ensure(VSISupportsRandomWrite("/vsimem/", false));
+#ifdef HAVE_CURL
+        ensure(!VSISupportsRandomWrite("/vsicurl/http://example.com", false));
+        ensure(!VSISupportsRandomWrite("/vsis3/test_bucket/", false));
+        ensure(!VSISupportsRandomWrite("/vsis3/test_bucket/", true));
+        CPLSetConfigOption("CPL_VSIL_USE_TEMP_FILE_FOR_RANDOM_WRITE", "YES");
+        ensure(!VSISupportsRandomWrite("/vsis3/test_bucket/", true));
+        CPLSetConfigOption("CPL_VSIL_USE_TEMP_FILE_FOR_RANDOM_WRITE", nullptr);
+#endif
+        ensure(!VSISupportsRandomWrite("/vsigzip//vsimem/tmp.gz", false));
+#ifdef HAVE_CURL
+        ensure(!VSISupportsRandomWrite("/vsigzip//vsicurl/http://example.com/tmp.gz", false));
+#endif
+        VSIStatBufL sStat;
+#ifdef _WIN32
+        if( VSIStatL("c:\\", &sStat) == 0 )
+            ensure(VSISupportsRandomWrite("c:\\", false));
+#else
+        if( VSIStatL("/tmp", &sStat) == 0 )
+            ensure(VSISupportsRandomWrite("/tmp", false));
+#endif
+    }
+
+    // Test ignore-env-vars = yes of configuration file
+    template<>
+    template<>
+    void object::test<61>()
+    {
+        char szEnvVar[] = "SOME_ENV_VAR_FOR_TEST_CPL_61=FOO";
+        putenv(szEnvVar);
+        ensure( CPLGetConfigOption("SOME_ENV_VAR_FOR_TEST_CPL_61", nullptr) != nullptr );
+
+        VSILFILE* fp = VSIFOpenL("/vsimem/.gdal/gdalrc", "wb");
+        VSIFPrintfL(fp, "[directives]\n");
+        VSIFPrintfL(fp, "ignore-env-vars=yes\n");
+        VSIFPrintfL(fp, "[configoptions]\n");
+        VSIFPrintfL(fp, "CONFIG_OPTION_FOR_TEST_CPL_61=BAR\n");
+        VSIFCloseL(fp);
+
+        // Load configuration file
+        CPLLoadConfigOptionsFromFile("/vsimem/.gdal/gdalrc", false);
+
+        // Check that reading configuration option works
+        ensure( EQUAL(CPLGetConfigOption("CONFIG_OPTION_FOR_TEST_CPL_61", ""), "BAR") );
+
+        // Check that environment variables are not read as configuration options
+        ensure( CPLGetConfigOption("SOME_ENV_VAR_FOR_TEST_CPL_61", nullptr) == nullptr );
+
+        // Reset ignore-env-vars=no
+        fp = VSIFOpenL("/vsimem/.gdal/gdalrc", "wb");
+        VSIFPrintfL(fp, "[directives]\n");
+        VSIFPrintfL(fp, "ignore-env-vars=no\n");
+        VSIFPrintfL(fp, "[configoptions]\n");
+        VSIFPrintfL(fp, "SOME_ENV_VAR_FOR_TEST_CPL_61=BAR\n");
+        VSIFCloseL(fp);
+
+        // Reload configuration file
+        CPLLoadConfigOptionsFromFile("/vsimem/.gdal/gdalrc", false);
+
+        // Check that environment variables are read as configuration options
+        // and override configuration options
+        ensure( CPLGetConfigOption("SOME_ENV_VAR_FOR_TEST_CPL_61", nullptr) != nullptr );
+        ensure_equals( std::string(CPLGetConfigOption("SOME_ENV_VAR_FOR_TEST_CPL_61", "")), std::string("FOO") );
+
+        VSIUnlink("/vsimem/.gdal/gdalrc");
+    }
+
+    // Test CPLWorkerThreadPool recursion
+    template<>
+    template<>
+    void object::test<62>()
+    {
+        struct Context
+        {
+            CPLWorkerThreadPool oThreadPool{};
+            std::atomic<int> nCounter{0};
+            std::mutex mutex{};
+            std::condition_variable cv{};
+            bool you_can_leave = false;
+            int threadStarted = 0;
+        };
+        Context ctxt;
+        ctxt.oThreadPool.Setup(2, nullptr, nullptr, /* waitAllStarted = */ true);
+
+        struct Data
+        {
+            Context* psCtxt;
+            int iJob;
+            GIntBig nThreadLambda;
+
+            Data(Context* psCtxtIn, int iJobIn):
+                psCtxt(psCtxtIn), iJob(iJobIn) {}
+            Data(const Data&) = default;
+        };
+        const auto lambda = [](void* pData)
+        {
+            auto psData = static_cast<Data*>(pData);
+            if( psData->iJob > 0 )
+            {
+                // wait for both threads to be started
+                std::unique_lock<std::mutex> guard(psData->psCtxt->mutex);
+                psData->psCtxt->threadStarted ++;
+                psData->psCtxt->cv.notify_one();
+                while( psData->psCtxt->threadStarted < 2 )
+                {
+                    psData->psCtxt->cv.wait(guard);
+                }
+            }
+
+            psData->nThreadLambda = CPLGetPID();
+            //fprintf(stderr, "lambda %d: " CPL_FRMT_GIB "\n",
+            //        psData->iJob, psData->nThreadLambda);
+            const auto lambda2 = [](void* pData2)
+            {
+                const auto psData2 = static_cast<Data*>(pData2);
+                const int iJob = psData2->iJob;
+                const int nCounter = psData2->psCtxt->nCounter ++;
+                CPL_IGNORE_RET_VAL(nCounter);
+                const auto nThreadLambda2 = CPLGetPID();
+                // fprintf(stderr, "lambda2 job=%d, counter(before)=%d, thread=" CPL_FRMT_GIB "\n", iJob, nCounter, nThreadLambda2);
+                if( iJob == 100 + 0 )
+                {
+                    ensure(nThreadLambda2 != psData2->nThreadLambda);
+                    // make sure that job 0 run in the other thread
+                    // takes sufficiently long that job 2 has been submitted
+                    // before it completes
+                    std::unique_lock<std::mutex> guard(psData2->psCtxt->mutex);
+                    while( !psData2->psCtxt->you_can_leave )
+                    {
+                        psData2->psCtxt->cv.wait(guard);
+                    }
+                }
+                else if( iJob == 100 + 1 || iJob == 100 + 2 )
+                    ensure(nThreadLambda2 == psData2->nThreadLambda);
+            };
+            auto poQueue = psData->psCtxt->oThreadPool.CreateJobQueue();
+            Data d0(*psData);
+            d0.iJob = 100 + d0.iJob * 3 + 0;
+            Data d1(*psData);
+            d1.iJob = 100 + d1.iJob * 3 + 1;
+            Data d2(*psData);
+            d2.iJob = 100 + d2.iJob * 3 + 2;
+            poQueue->SubmitJob(lambda2, &d0);
+            poQueue->SubmitJob(lambda2, &d1);
+            poQueue->SubmitJob(lambda2, &d2);
+            if( psData->iJob == 0 )
+            {
+                std::lock_guard<std::mutex> guard(psData->psCtxt->mutex);
+                psData->psCtxt->you_can_leave = true;
+                psData->psCtxt->cv.notify_one();
+            }
+        };
+        {
+            auto poQueue = ctxt.oThreadPool.CreateJobQueue();
+            Data data0(&ctxt, 0);
+            poQueue->SubmitJob(lambda, &data0);
+        }
+        {
+            auto poQueue = ctxt.oThreadPool.CreateJobQueue();
+            Data data1(&ctxt, 1);
+            Data data2(&ctxt, 2);
+            poQueue->SubmitJob(lambda, &data1);
+            poQueue->SubmitJob(lambda, &data2);
+        }
+        ensure_equals(ctxt.nCounter, 3 * 3);
     }
 
     // WARNING: keep that line at bottom and read carefully:

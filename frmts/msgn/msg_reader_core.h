@@ -92,6 +92,8 @@ public:
 
     float get_col_dir_step() const { return _col_dir_step; }
     float get_line_dir_step() const { return _line_dir_step; }
+    float get_hrv_col_dir_step() const { return _hrv_col_dir_step; }
+    float get_hrv_line_dir_step() const { return _hrv_line_dir_step; }
 
     unsigned int get_f_data_offset() const { return _f_data_offset; }
     unsigned int get_visir_bytes_per_line() const { return _visir_bytes_per_line; }
@@ -103,6 +105,7 @@ public:
     const unsigned char* get_band_map() const { return _bands; }
 
     const CALIBRATION*  get_calibration_parameters() const { return _calibration; }
+    const IMAGE_DESCRIPTION_RECORD& get_image_description_record() const { return _img_desc_record; }
 
 private:
     void read_metadata_block(VSILFILE* fp);
@@ -119,15 +122,20 @@ protected:
 
     float           _col_dir_step;
     float           _line_dir_step;
+    float           _hrv_col_dir_step;
+    float           _hrv_line_dir_step;
 
     MAIN_PROD_HEADER        _main_header;
     SECONDARY_PROD_HEADER   _sec_header;
     CALIBRATION             _calibration[MSG_NUM_CHANNELS];
+    IMAGE_DESCRIPTION_RECORD _img_desc_record;
 
     unsigned int _f_data_offset;
     unsigned int _f_data_size;
     unsigned int _f_header_offset;
     unsigned int _f_header_size;
+    unsigned int _f_trailer_offset;
+    unsigned int _f_trailer_size;
 
     unsigned int _visir_bytes_per_line;   // packed length of a VISIR line, without headers
     unsigned int _visir_packet_size;      // effectively, the spacing between lines of consecutive bands in bytes

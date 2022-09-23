@@ -305,7 +305,7 @@ protected:
     odbc::StatementRef CreateStatement();
     odbc::PreparedStatementRef PrepareStatement(const char* sql);
     void Commit();
-    void ExecuteSQL(const char* sql);
+    void ExecuteSQL(const CPLString& sql);
 
     OGRSpatialReference* GetSrsById(int srid);
     int GetSrsId(OGRSpatialReference* srs);
@@ -314,7 +314,7 @@ protected:
     OGRErr GetQueryColumns(
         const CPLString& schemaName,
         const CPLString& query,
-        std::vector<OGRHANA::ColumnDescription>& columDescriptions);
+        std::vector<OGRHANA::ColumnDescription>& columnDescriptions);
     std::vector<CPLString> GetTablePrimaryKeys(
         const char* schemaName, const char* tableName);
 
@@ -328,6 +328,8 @@ protected:
         int authorityCode,
         const CPLString& wkt,
         const CPLString& proj4);
+
+    std::pair<OGRErr, CPLString> LaunderName(const char* name);
 
     bool IsTransactionStarted() const { return isTransactionStarted_; }
 
@@ -346,7 +348,7 @@ public:
 
     int Open(const char* newName, char** options, int update);
 
-    uint GetMajorVersion() const { return majorVersion_; }
+    int GetMajorVersion() const { return majorVersion_; }
     OGRErr DeleteLayer(int index) override;
     int GetLayerCount() override { return static_cast<int>(layers_.size()); }
     OGRLayer* GetLayer(int index) override;
