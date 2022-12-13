@@ -1615,6 +1615,10 @@ the dataset name since GDAL 3.1
 
     vrt://{path_to_gdal_dataset}?[a_ullr=ulx,uly,lrx,lry]
 
+::
+
+    vrt://{path_to_gdal_dataset}?[subds=subdataset]
+
 
 For example:
 
@@ -1629,9 +1633,13 @@ For example:
 ::
 
     vrt://my.tif?a_ullr=0,1,1,-1
-    
 
-The supported options currently are ``bands``, ``a_srs`` and ``a_ullr``. Other options may be 
+::
+
+    vrt://my.tif?subds=varname
+
+
+The supported options currently are ``bands``, ``a_srs``, ``a_ullr`` and ``subds``. Other options may be 
 added in the future.
 
 The effect of the ``bands`` option is to change the band composition. The values specified
@@ -1647,6 +1655,11 @@ definition.
 The effect of the ``a_ullr`` option (added in GDAL 3.7) is to assign (override) the georeferenced
 bounds of the source in the same way as (:ref:`gdal_translate`). The value consists of four numeric
 values separated by commas, in the order 'xmin,ymax,xmax,ymin' (upper left x,y, lower right x,y). 
+
+The effect of the ``subds`` option (added in GDAL 3.7) is to choose a particular subdataset by name
+of the underlying variable from a source containing multiple subdatasets. This is equivalent to the
+driver-explicit syntax for subdatasets such as `NETCDF:/data/source/name.nc:varname`, with only 'varname'
+required to be specified. 
 
 The options may be chained together separated by '&'. (Beware the need for quoting to protect
 the ampersand).
