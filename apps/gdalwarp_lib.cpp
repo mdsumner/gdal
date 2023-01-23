@@ -1413,10 +1413,12 @@ static bool CheckOptions(const char *pszDest, GDALDatasetH hDstDS,
     }
 
     if (psOptions->bTargetAlignedPixels && psOptions->dfXRes == 0 &&
-        psOptions->dfYRes == 0)
+        psOptions->dfYRes == 0 && psOptions->nForcePixels == 0 &&
+        psOptions->nForceLines == 0)
     {
         CPLError(CE_Failure, CPLE_IllegalArg,
-                 "-tap option cannot be used without using -tr.");
+                 "-tap option cannot be used without using either -tr or -ts.");
+
         if (pbUsageError)
             *pbUsageError = TRUE;
         return false;
@@ -3337,7 +3339,8 @@ static GDALDatasetH GDALWarpCreateOutput(
     /* If (-ts and -te) or (-tr and -te) are specified, we don't need to compute
      * the suggested output extent */
     const bool bNeedsSuggestedWarpOutput =
-        !(((psOptions->nForcePixels != 0 && psOptions->nForceLines != 0) ||
+        !(((!psOptions->bTargetAlignedPixels &&
+            (psOptions->nForcePixels != 0 && psOptions->nForceLines != 0)) ||
            (psOptions->dfXRes != 0 && psOptions->dfYRes != 0)) &&
           !(psOptions->dfMinX == 0.0 && psOptions->dfMinY == 0.0 &&
             psOptions->dfMaxX == 0.0 && psOptions->dfMaxY == 0.0));
@@ -4035,6 +4038,48 @@ static GDALDatasetH GDALWarpCreateOutput(
             psOptions->dfMaxX = dfWrkMaxX;
             psOptions->dfMaxY = dfWrkMaxY;
             psOptions->dfMinY = dfWrkMinY;
+        }
+
+        if (psOptions->bTargetAlignedPixels ||
+            (psOptions->bCropToCutline &&
+             psOptions->aosWarpOptions.FetchBool("CUTLINE_ALL_TOUCHED", false)))
+        {
+            double adfSrcGeoTransform[6];
+            (static_cast<GDALDataset *>(pahSrcDS[0]))
+                ->GetGeoTransform(adfSrcGeoTransform);
+            double dfSrcXRes = adfSrcGeoTransform[1];
+            double dfSrcYRes = adfSrcGeoTransform[5];
+            double dfSrcMinX = adfSrcGeoTransform[0];
+            double dfSrcMaxY = adfSrcGeoTransform[3];
+
+            // aligned left edge
+            double dfAlignMinX =
+                floor((psOptions->dfMinX - dfSrcMinX) / dfSrcXRes) * dfSrcXRes +
+                dfSrcMinX;
+            // aligned top edge
+            double dfAlignMaxY =
+                ceil((dfSrcMaxY - psOptions->dfMaxY) / -dfSrcYRes) * dfSrcYRes +
+                dfSrcMaxY;
+
+            double dfApproxXRes = ceil((psOptions->dfMaxX - dfAlignMinX) /
+                                       psOptions->nForcePixels);
+            double dfNewXRes = ceil(dfApproxXRes / dfSrcXRes) * dfSrcXRes;
+
+            double dfApproxYRes = ceil((dfAlignMaxY - psOptions->dfMinY) /
+                                       psOptions->nForceLines);
+            double dfNewYRes = ceil(dfApproxYRes / dfSrcYRes) * dfSrcYRes;
+
+            psOptions->dfMinX = dfAlignMinX;
+            psOptions->dfMaxX =
+                dfAlignMinX + psOptions->nForcePixels * dfNewXRes;
+
+            psOptions->dfMinY =
+                dfAlignMaxY + psOptions->nForceLines * -dfNewYRes;
+            psOptions->dfMaxY = dfAlignMaxY;
+
+            CPLDebug("GDALWARP",
+                     "Recompute out extent with -ts -tap %f %f %f %f",
+                     dfAlignMinX, dfAlignMaxY, dfNewXRes, dfNewYRes);
         }
 
         psOptions->dfXRes =
