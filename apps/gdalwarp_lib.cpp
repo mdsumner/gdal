@@ -3342,8 +3342,7 @@ static GDALDatasetH GDALWarpCreateOutput(
     /* If (-ts and -te) or (-tr and -te) are specified, we don't need to compute
      * the suggested output extent */
     const bool bNeedsSuggestedWarpOutput =
-        !(((!psOptions->bTargetAlignedPixels &&
-            (psOptions->nForcePixels != 0 && psOptions->nForceLines != 0)) ||
+        !(((psOptions->nForcePixels != 0 && psOptions->nForceLines != 0) ||
            (psOptions->dfXRes != 0 && psOptions->dfYRes != 0)) &&
           !(psOptions->dfMinX == 0.0 && psOptions->dfMinY == 0.0 &&
             psOptions->dfMaxX == 0.0 && psOptions->dfMaxY == 0.0));
