@@ -1182,6 +1182,52 @@ GDALDataset *VRTDataset::OpenVRTProtocol(const char *pszSpec)
         CPLFree(pszKey);
     }
 
+    for (int i = 0; i < aosTokens.size(); i++)
+    {
+        CPLString pszArg = aosTokens[i];
+        if (pszArg.ifind("=") == std::string::npos)
+        {
+            if (EQUAL(pszArg, "stats"))
+            {
+                argv.AddString("-stats");
+            }
+            else if (EQUAL(pszArg, "strict"))
+            {
+                argv.AddString("-strict");
+            }
+            else if (EQUAL(pszArg, "unscale"))
+            {
+                argv.AddString("-unscale");
+            }
+            else if (EQUAL(pszArg, "scale"))
+            {
+                argv.AddString("-scale");
+            }
+            else if (EQUAL(pszArg, "nogcp"))
+            {
+                argv.AddString("-nogcp");
+            }
+            else if (EQUAL(pszArg, "q"))
+            {
+                argv.AddString("-q");
+            }
+            else if (EQUAL(pszArg, "norat"))
+            {
+                argv.AddString("-norat");
+            }
+            else if (EQUAL(pszArg, "noxmp"))
+            {
+                argv.AddString("-noxmp");
+            }
+            else
+            {
+                CPLError(CE_Failure, CPLE_NotSupported, "Unknown option: %s",
+                         pszArg.c_str());
+                poSrcDS->ReleaseRef();
+                return nullptr;
+            }
+        }
+    }
     GDALTranslateOptions *psOptions =
         GDALTranslateOptionsNew(argv.List(), nullptr);
 
