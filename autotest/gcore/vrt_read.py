@@ -1475,12 +1475,12 @@ def test_vrt_protocol():
     ds = gdal.Open("vrt://data/float32.tif?gcp=0,0,0,10&gcp=20,0,10,10")
     assert ds.GetGCPCount() == 2
 
-    ds = gdal.Open("vrt://data/float32.tif?gcp=invalid")
-    assert ds is None
+    with gdal.quiet_errors():
+        assert not gdal.Open("vrt://data/float32.tif?gcp=invalid")
 
     ## not compatible, or no such driver
-    ds = gdal.Open("vrt://data/float32.tif?if=AAIGrid,doesnotexist")
-    assert ds is None
+    with gdal.quiet_errors():
+        assert not gdal.Open("vrt://data/float32.tif?if=AAIGrid,doesnotexist")
 
     ## compatible driver included
     ds = gdal.Open("vrt://data/float32.tif?if=AAIGrid,GTiff")
@@ -1496,8 +1496,8 @@ def test_vrt_protocol():
     ds = gdal.Open("vrt://data/float32.tif?scale_1=0,10")
     assert ds.GetRasterBand(1).Checksum() == 4867
 
-    ds = gdal.Open("vrt://data/float32.tif?exponent=2.2")
-    assert ds is None
+    with gdal.quiet_errors():
+        assert not gdal.Open("vrt://data/float32.tif?exponent=2.2")
 
     ds = gdal.Open("vrt://data/float32.tif?exponent=2.2&scale=0,100")
     assert ds.GetRasterBand(1).Checksum() == 5294
@@ -1506,8 +1506,7 @@ def test_vrt_protocol():
     assert ds.GetRasterBand(2).Checksum() == 4455
 
     with gdal.quiet_errors():
-        ds = gdal.Open("vrt://data/float32.tif?outsize=10")
-        assert ds is None
+        assert not gdal.Open("vrt://data/float32.tif?outsize=10")
 
     ds = gdal.Open("vrt://data/float32.tif?outsize=10,5")
     assert ds.GetRasterBand(1).XSize == 10
@@ -1518,8 +1517,7 @@ def test_vrt_protocol():
     assert ds.GetRasterBand(1).YSize == 5
 
     with gdal.quiet_errors():
-        ds = gdal.Open("vrt://data/float32.tif?projwin=440840,441920,3750120")
-        assert ds is None
+        assert not gdal.Open("vrt://data/float32.tif?projwin=440840,441920,3750120")
 
     ds = gdal.Open("vrt://data/float32.tif?projwin=440840,3751080,441920,3750120")
     assert ds.GetGeoTransform()[0] == 440840.0
@@ -1541,8 +1539,7 @@ def test_vrt_protocol():
     assert ds.GetRasterBand(1).YSize == 16
 
     with gdal.quiet_errors():
-        ds = gdal.Open("vrt://data/float32.tif?tr=120")
-        assert ds is None
+        assert not gdal.Open("vrt://data/float32.tif?tr=120")
 
     ds = gdal.Open("vrt://data/float32.tif?tr=120,240")
 
@@ -1558,8 +1555,7 @@ def test_vrt_protocol():
     )  ## check values changed via bilinear
 
     with gdal.quiet_errors():
-        ds = gdal.Open("vrt://data/float32.tif?srcwin=0,0,3")
-        assert ds is None
+        assert not gdal.Open("vrt://data/float32.tif?srcwin=0,0,3")
 
     ds = gdal.Open("vrt://data/float32.tif?srcwin=2,3,8,5")
     assert ds.GetRasterBand(1).XSize == 8
@@ -1569,8 +1565,7 @@ def test_vrt_protocol():
     )  ## check value is correct
 
     with gdal.quiet_errors():
-        ds = gdal.Open("vrt://data/float32.tif?a_gt=1,0,0,0,1")
-        assert ds is None
+        assert not gdal.Open("vrt://data/float32.tif?a_gt=1,0,0,0,1")
 
     ds = gdal.Open("vrt://data/float32.tif?a_gt=0,1,0,0,0,1")
     gdaltest.check_geotransform(
