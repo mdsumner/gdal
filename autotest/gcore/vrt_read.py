@@ -1601,6 +1601,11 @@ def test_vrt_protocol():
             "vrt://data/byte_with_ovr.tif?oo=GEOREF_SOURCES=TABFILE&oo=OVERVIEW_LEVEL=0"
         )
 
+    # test that 'key=value' form is used
+    with gdal.quiet_errors():
+        assert not gdal.Open("vrt://data/minfloat.tif?anyoption")
+        assert not gdal.Open("vrt://data/minfloat.tif?a_ullr=0,1,1,0&unscale")
+
 
 @pytest.mark.require_driver("BMP")
 def test_vrt_protocol_expand_option():

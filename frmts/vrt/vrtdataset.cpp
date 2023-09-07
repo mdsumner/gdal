@@ -1022,6 +1022,16 @@ GDALDataset *VRTDataset::OpenVRTProtocol(const char *pszSpec)
             }
             CPLFree(pszKey);
         }
+        else
+        {
+
+            CPLError(CE_Failure, CPLE_NotSupported,
+                     "Invalid option specification: %s\n"
+                     "must be in the form 'key=value'",
+                     aosTokens[i]);
+
+            return nullptr;
+        }
     }
 
     // We don't open in GDAL_OF_SHARED mode to avoid issues when we open a
