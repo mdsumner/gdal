@@ -59,6 +59,8 @@
 
 static int ArgIsNumeric(const char *);
 static void AttachMetadata(GDALDatasetH, const CPLStringList &);
+static void AttachDomainMetadata(GDALDatasetH, const CPLStringList &);
+
 static void CopyBandInfo(GDALRasterBand *poSrcBand, GDALRasterBand *poDstBand,
                          int bCanCopyStatsMetadata, int bCopyScale,
                          int bCopyNoData, bool bCopyRAT,
@@ -200,6 +202,8 @@ struct GDALTranslateOptions
      *  GDALTranslateOptionsSetMetadataOptions() and
      * GDALTranslateOptionsAddMetadataOptions() should be used */
     CPLStringList aosMetadataOptions{};
+
+    CPLStringList aosDomainMetadataOptions{};
 
     /*! override the projection for the output file. The SRS may be any of the
        usual GDAL/OGR forms, complete WKT, PROJ.4, EPSG:n or a file containing
@@ -1803,6 +1807,10 @@ GDALDatasetH GDALTranslate(const char *pszDest, GDALDatasetH hSrcDataset,
 
     poVDS->SetMetadata(papszMetadata);
     CSLDestroy(papszMetadata);
+
+    AttachDomainMetadata(GDALDataset::ToHandle(poVDS),
+                         psOptions->aosDomainMetadataOptions);
+
     AttachMetadata(GDALDataset::ToHandle(poVDS), psOptions->aosMetadataOptions);
 
     const char *pszInterleave =
@@ -2642,6 +2650,32 @@ static void AttachMetadata(GDALDatasetH hDS,
 }
 
 /************************************************************************/
+/*                           AttachDomainMetadata()                           */
+/************************************************************************/
+
+static void AttachDomainMetadata(GDALDatasetH hDS,
+                                 const CPLStringList &aosDomainMetadataOptions)
+
+{
+    const int nCount = aosDomainMetadataOptions.size();
+    CPLDebug("DMO", "dmo %s", aosDomainMetadataOptions[0]);
+    for (int i = 0; i < nCount; i++)
+    {
+        // FIXME: catch invalid cases syntax is DOMAIN:META-TAG=value
+        CPLStringList aosTokens(
+            CSLTokenizeString2(aosDomainMetadataOptions[i], ":", 0));
+        char *pszKey = nullptr;
+        const char *pszValue = CPLParseNameValue(aosTokens[1], &pszKey);
+        if (pszKey && pszValue)
+        {
+            GDALSetMetadataItem(hDS, pszKey, pszValue, aosTokens[0]);
+        }
+        CPLDebug("DMO", "dmo %s", pszValue);
+        CPLFree(pszKey);
+    }
+}
+
+/************************************************************************/
 /*                           CopyBandInfo()                            */
 /************************************************************************/
 
@@ -3137,6 +3171,12 @@ GDALTranslateOptionsNew(char **papszArgv,
         else if (EQUAL(papszArgv[i], "-mo") && papszArgv[i + 1])
         {
             psOptions->aosMetadataOptions.AddString(papszArgv[++i]);
+        }
+
+        else if (EQUAL(papszArgv[i], "-dmo") && papszArgv[i + 1])
+        {
+            psOptions->aosDomainMetadataOptions.AddString(papszArgv[++i]);
+            CPLDebug("DMO", "dmo %s", papszArgv[i]);
         }
 
         else if (i + 2 < argc && EQUAL(papszArgv[i], "-outsize") &&
