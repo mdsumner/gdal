@@ -12007,6 +12007,7 @@ CPLErr netCDFDataset::FilterVars(
     bool bIsVectorOnly = true;
     int nProfileDimId = -1;
     int nParentIndexVarID = -1;
+    int nCfRoleDimId = -1;
 
     for (int v = 0; v < nVars; v++)
     {
@@ -12153,6 +12154,31 @@ CPLErr netCDFDataset::FilterVars(
                             NCDF_ERR(status);
                     }
                 }
+
+                if (nc_inq_att(nCdfId, v, "cf_role", &atttype,
+                               &attlen) == NC_NOERR &&
+                                 atttype == NC_CHAR && attlen < NC_MAX_NAME)
+                {
+                  char szCfRole[NC_MAX_NAME + 1];
+                  if (nc_get_att_text(nCdfId, v, "cf_role",
+                                      szCfRole) == NC_NOERR)
+                  {
+                    szCfRole[attlen] = 0;
+
+                    int status = nc_inq_vardimid(nCdfId, v, &nCfRoleDimId);
+                    if (status == NC_NOERR)
+                      nParentIndexVarID = v;
+                    else
+                      nCfRoleDimId = -1;
+                    if (status == NC_EBADDIM)
+                      CPLError(CE_Warning, CPLE_AppDefined,
+                               "Attribute cf_role='%s' refers "
+                               "to a non existing dimension",
+                               szCfRole);
+                    else
+                      NCDF_ERR(status);
+                  }
+                }
                 if (v != nParentIndexVarID)
                 {
                     anPotentialVectorVarID.push_back(v);
@@ -12188,7 +12214,8 @@ CPLErr netCDFDataset::FilterVars(
         // Take the dimension that is referenced the most times.
         if (!(oMapDimIdToCount.size() == 1 ||
               (EQUAL(osFeatureType, "profile") &&
-               oMapDimIdToCount.size() == 2 && nProfileDimId >= 0)))
+               oMapDimIdToCount.size() == 2 && nProfileDimId >= 0) ||
+               EQUAL(osFeatureType, "timeSeries")))
         {
             CPLError(CE_Warning, CPLE_AppDefined,
                      "The dataset has several variables that could be "
@@ -12205,7 +12232,7 @@ CPLErr netCDFDataset::FilterVars(
             CreateGrpVectorLayers(nCdfId, osFeatureType, anPotentialVectorVarID,
                                   oMapDimIdToCount, nVarXId, nVarYId, nVarZId,
                                   nProfileDimId, nParentIndexVarID,
-                                  bKeepRasters);
+                                  bKeepRasters, nCfRoleDimId);
         }
     }
 
@@ -12230,7 +12257,8 @@ CPLErr netCDFDataset::CreateGrpVectorLayers(
     int nCdfId, const CPLString &osFeatureType,
     const std::vector<int> &anPotentialVectorVarID,
     const std::map<int, int> &oMapDimIdToCount, int nVarXId, int nVarYId,
-    int nVarZId, int nProfileDimId, int nParentIndexVarID, bool bKeepRasters)
+    int nVarZId, int nProfileDimId, int nParentIndexVarID, bool bKeepRasters,
+    int nCfRoleDimId)
 {
     char *pszGroupName = nullptr;
     NCDFGetGroupFullName(nCdfId, &pszGroupName);
@@ -12246,7 +12274,7 @@ CPLErr netCDFDataset::CreateGrpVectorLayers(
     papszMetadata =
         CSLSetNameValue(papszMetadata, "NC_GLOBAL#ogr_layer_name", nullptr);
 
-    if (EQUAL(osFeatureType, "point") || EQUAL(osFeatureType, "profile"))
+    if (EQUAL(osFeatureType, "point") || EQUAL(osFeatureType, "profile") || EQUAL(osFeatureType, "timeSeries"))
     {
         papszMetadata =
             CSLSetNameValue(papszMetadata, "NC_GLOBAL#featureType", nullptr);
@@ -12278,6 +12306,18 @@ CPLErr netCDFDataset::CreateGrpVectorLayers(
     {
         nProfileDimId = -1;
     }
+
+    CPLDebug("GDAL_netCDF", "oMapDimIdToCount.size(): %li", oMapDimIdToCount.size());
+    if (EQUAL(osFeatureType, "timeSeries") && nCfRoleDimId > -1)
+    {
+      if (nVectorDim == nCfRoleDimId)
+        nVectorDim = oMapDimIdToCount.begin()->first;
+    }
+    else
+    {
+      nCfRoleDimId = -1;
+    }
+
     for (size_t j = 0; j < anPotentialVectorVarID.size(); j++)
     {
         int anDimIds[2] = {-1, -1};
@@ -12288,6 +12328,7 @@ CPLErr netCDFDataset::CreateGrpVectorLayers(
             break;
         }
     }
+CPLDebug("GDAL_netCDF", "nFirstVarId: %i", nFirstVarId);
 
     // In case where coordinates are explicitly specified for one of the
     // field/variable, use them in priority over the ones that might have been
@@ -12338,7 +12379,8 @@ CPLErr netCDFDataset::CreateGrpVectorLayers(
             nc_inq_varndims(nCdfId, nVarYId, &nVarDimCount) != NC_NOERR ||
             nVarDimCount != 1 ||
             nc_inq_vardimid(nCdfId, nVarYId, &nVarDimId) != NC_NOERR ||
-            nVarDimId != ((nProfileDimId >= 0) ? nProfileDimId : nVectorDim))
+            nVarDimId != ((nProfileDimId >= 0) ? nProfileDimId : nVectorDim) ||
+            nVarDimId != ((nCfRoleDimId >= 0) ? nCfRoleDimId : nVectorDim))
         {
             nVarXId = nVarYId = -1;
         }
@@ -12413,6 +12455,9 @@ CPLErr netCDFDataset::CreateGrpVectorLayers(
         poLayer->SetGridMapping(pszGridMapping);
         CPLFree(pszGridMapping);
     }
+    // fixme
+    //nProfileDimId = nCfRoleDimId;
+
     poLayer->SetProfile(nProfileDimId, nParentIndexVarID);
 
     for (size_t j = 0; j < anPotentialVectorVarID.size(); j++)
@@ -12420,7 +12465,8 @@ CPLErr netCDFDataset::CreateGrpVectorLayers(
         int anDimIds[2] = {-1, -1};
         nc_inq_vardimid(nCdfId, anPotentialVectorVarID[j], anDimIds);
         if (anDimIds[0] == nVectorDim ||
-            (nProfileDimId >= 0 && anDimIds[0] == nProfileDimId))
+            (nProfileDimId >= 0 && anDimIds[0] == nProfileDimId) ||
+            (nCfRoleDimId >= 0 && anDimIds[0] == nCfRoleDimId))
         {
 #ifdef NCDF_DEBUG
             char szTemp2[NC_MAX_NAME + 1] = {};

@@ -531,7 +531,7 @@ class netCDFDataset final : public GDALPamDataset
                                  const std::map<int, int> &oMapDimIdToCount,
                                  int nVarXId, int nVarYId, int nVarZId,
                                  int nProfileDimId, int nParentIndexVarID,
-                                 bool bKeepRasters);
+                                 bool bKeepRasters, int nCfRoleDimId);
 
     bool DetectAndFillSGLayers(int ncid);
     CPLErr LoadSGVarIntoLayer(int ncid, int nc_basevarId);
