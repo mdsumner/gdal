@@ -476,17 +476,30 @@ GDALDataset *ZarrDataset::Open(GDALOpenInfo *poOpenInfo)
                 }
             }
         }
-
+        CPLString osDim;
         if (aosArrays.size() >= 2)
         {
+        
             for (size_t i = 0; i < aosArrays.size(); ++i)
             {
+              // MSumner: don't know what I'm doing here ...
+              std::shared_ptr<GDALMDArray> poMainArray2;
+              poMainArray2 = poRG->OpenMDArrayFromFullname(aosArrays[i]); 
+              for (int i = 0; i < poMainArray2->GetDimensions().size(); i++)
+              {
+                CPLDebug("ZARR", "i: %i", i);
+                osDim += CPLSPrintf("%dx", poMainArray2->GetDimensions()[i]->GetSize());
+              }
+              // Get rid of the last "x" character.
+              osDim.pop_back();
                 poDS->m_aosSubdatasets.AddString(
                     CPLSPrintf("SUBDATASET_%d_NAME=ZARR:\"%s\":%s", iCountSubDS,
                                osFilename.c_str(), aosArrays[i].c_str()));
                 poDS->m_aosSubdatasets.AddString(
-                    CPLSPrintf("SUBDATASET_%d_DESC=Array %s", iCountSubDS,
+                    CPLSPrintf("SUBDATASET_%d_DESC=[%s] %s", iCountSubDS,
+                               osDim.c_str(),
                                aosArrays[i].c_str()));
+                osDim.Seize(NULL); 
                 ++iCountSubDS;
             }
         }
