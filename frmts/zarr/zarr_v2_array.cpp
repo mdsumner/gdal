@@ -686,8 +686,9 @@ bool ZarrV2Array::LoadBlockData(const uint64_t *blockIndices, bool bUseMutex,
                 ? ZarrGetQuantizeDecompressor()
             : EQUAL(osFilterId.c_str(), "fixedscaleoffset")
                 ? ZarrGetFixedScaleOffsetDecompressor()
+            : EQUAL(osFilterId.c_str(), "tiff_predictor")
+                ? ZarrGetTiffPredictorDecompressor()
                 : CPLGetDecompressor(osFilterId.c_str());
-        CPLAssert(psFilterDecompressor);
 
         CPLStringList aosOptions;
         for (const auto &obj : oFilter.GetChildren())
@@ -2021,7 +2022,8 @@ ZarrV2Group::LoadArray(const std::string &osArrayName,
             }
             if (!EQUAL(osFilterId.c_str(), "shuffle") &&
                 !EQUAL(osFilterId.c_str(), "quantize") &&
-                !EQUAL(osFilterId.c_str(), "fixedscaleoffset"))
+                !EQUAL(osFilterId.c_str(), "fixedscaleoffset") &&
+                !EQUAL(osFilterId.c_str(), "tiff_predictor"))
             {
                 const auto psFilterCompressor =
                     CPLGetCompressor(osFilterId.c_str());

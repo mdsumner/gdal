@@ -595,3 +595,138 @@ const CPLCompressor *ZarrGetFixedScaleOffsetDecompressor()
 
     return &gFixedScaleOffsetDecompressor;
 }
+
+/************************************************************************/
+/*                   ZarrTiffPredictorDecompressor()                    */
+/************************************************************************/
+
+static bool ZarrTiffPredictorDecompressor(const void *input_data,
+                                          size_t input_size, void **output_data,
+                                          size_t *output_size,
+                                          CSLConstList options,
+                                          void * /* compressor_user_data */)
+{
+    const int nPredictor =
+        atoi(CSLFetchNameValueDef(options, "PREDICTOR", "2"));
+    const int nTileWidth =
+        atoi(CSLFetchNameValueDef(options, "TILEWIDTH", "0"));
+    const int nNBits = atoi(CSLFetchNameValueDef(options, "NBITS", "0"));
+
+    if (nTileWidth <= 0 || nNBits <= 0 || (nNBits % 8) != 0)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                 "tiff_predictor: invalid TILEWIDTH or NBITS");
+        if (output_size)
+            *output_size = 0;
+        return false;
+    }
+
+    if (output_data == nullptr || *output_data == nullptr ||
+        output_size == nullptr || *output_size == 0)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined, "Invalid use of API");
+        return false;
+    }
+
+    if (*output_size < input_size)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined, "Too small output size");
+        *output_size = input_size;
+        return false;
+    }
+
+    const int nBytesPerSample = nNBits / 8;
+    const int nRowBytes = nTileWidth * nBytesPerSample;
+    if (nRowBytes == 0 || (input_size % nRowBytes) != 0)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                 "tiff_predictor: input_size not a multiple of "
+                 "tilewidth * sample size");
+        if (output_size)
+            *output_size = 0;
+        return false;
+    }
+
+    memcpy(*output_data, input_data, input_size);
+    const int nTileHeight = static_cast<int>(input_size / nRowBytes);
+
+    if (nPredictor == 2)
+    {
+        for (int row = 0; row < nTileHeight; row++)
+        {
+            GByte *line = static_cast<GByte *>(*output_data) + row * nRowBytes;
+            if (nBytesPerSample == 1)
+            {
+                for (int col = 1; col < nTileWidth; col++)
+                    line[col] += line[col - 1];
+            }
+            else if (nBytesPerSample == 2)
+            {
+                uint16_t *wp = reinterpret_cast<uint16_t *>(line);
+                for (int col = 1; col < nTileWidth; col++)
+                    wp[col] += wp[col - 1];
+            }
+            else if (nBytesPerSample == 4)
+            {
+                uint32_t *dp = reinterpret_cast<uint32_t *>(line);
+                for (int col = 1; col < nTileWidth; col++)
+                    dp[col] += dp[col - 1];
+            }
+        }
+    }
+    else if (nPredictor == 3)
+    {
+        // Floating-point horizontal differencing
+        // 1. Undo byte-level horizontal differencing per row
+        for (int row = 0; row < nTileHeight; row++)
+        {
+            GByte *line = static_cast<GByte *>(*output_data) + row * nRowBytes;
+            for (int col = 1; col < nRowBytes; col++)
+            {
+                line[col] += line[col - 1];
+            }
+        }
+        // 2. Un-shuffle: bytes are stored plane-interleaved within row
+        //    (all MSBs, then all next bytes, etc.)
+        std::vector<GByte> tmp(nRowBytes);
+        for (int row = 0; row < nTileHeight; row++)
+        {
+            GByte *line = static_cast<GByte *>(*output_data) + row * nRowBytes;
+            memcpy(tmp.data(), line, nRowBytes);
+            for (int i = 0; i < nTileWidth; i++)
+            {
+                for (int b = 0; b < nBytesPerSample; b++)
+                {
+                    line[i * nBytesPerSample + b] = tmp[b * nTileWidth + i];
+                }
+            }
+        }
+    }
+    else
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                 "tiff_predictor: unsupported predictor %d", nPredictor);
+        *output_size = 0;
+        return false;
+    }
+
+    *output_size = input_size;
+    return true;
+}
+
+/************************************************************************/
+/*                  ZarrGetTiffPredictorDecompressor()                  */
+/************************************************************************/
+
+const CPLCompressor *ZarrGetTiffPredictorDecompressor()
+{
+    static const CPLCompressor gTiffPredictorDecompressor = {
+        /* nStructVersion = */ 1,
+        /* pszId = */ "tiff_predictor",
+        CCT_FILTER,
+        /* papszMetadata = */ nullptr,
+        ZarrTiffPredictorDecompressor,
+        /* user_data = */ nullptr};
+
+    return &gTiffPredictorDecompressor;
+}

@@ -41,6 +41,7 @@ const CPLCompressor *ZarrGetShuffleDecompressor();
 const CPLCompressor *ZarrGetQuantizeDecompressor();
 const CPLCompressor *ZarrGetTIFFDecompressor();
 const CPLCompressor *ZarrGetFixedScaleOffsetDecompressor();
+const CPLCompressor *ZarrGetTiffPredictorDecompressor();
 
 /************************************************************************/
 /*                          MultiplyElements()                          */
