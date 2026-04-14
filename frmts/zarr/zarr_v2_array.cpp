@@ -1989,6 +1989,10 @@ ZarrV2Group::LoadArray(const std::string &osArrayName,
         {
             psDecompressor = ZarrGetTIFFDecompressor();
         }
+        else if (osDecompressorId == "imagecodecs_jpeg")
+        {
+            psDecompressor = ZarrGetJPEGDecompressor();
+        }
         else
         {
             psCompressor = CPLGetCompressor(osDecompressorId.c_str());
