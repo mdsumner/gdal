@@ -10,6 +10,7 @@
 #include "gdalalg_mdim_get_refs.h"
 #include "cpl_conv.h"
 #include "gdal_priv.h"
+#include "ogrsf_frmts.h"
 
 #ifndef _
 #define _(x) (x)
@@ -26,7 +27,8 @@ GDALMdimGetRefsAlgorithm::GDALMdimGetRefsAlgorithm()
     AddOutputFormatArg(&m_outputFormat, /* bStreamAllowed = */ false,
                        /* bGDALGAllowed = */ false)
         .AddMetadataItem(GAAMDI_REQUIRED_CAPABILITIES,
-                         {GDAL_DCAP_VECTOR, GDAL_DCAP_CREATE});
+                         {GDAL_DCAP_VECTOR, GDAL_DCAP_CREATE})
+        .SetRequired();
     AddOpenOptionsArg(&m_openOptions);
     AddInputFormatsArg(&m_inputFormats)
         .AddMetadataItem(GAAMDI_REQUIRED_CAPABILITIES,
@@ -40,6 +42,19 @@ GDALMdimGetRefsAlgorithm::GDALMdimGetRefsAlgorithm()
         .SetRequired();
 }
 
+// Local helper for one-line vector formatting (used in debug + later metadata).
+auto FormatVec = [](const std::vector<size_t> &v) -> CPLString
+{
+    CPLString os;
+    for (size_t i = 0; i < v.size(); ++i)
+    {
+        if (i > 0)
+            os += ", ";
+        os += CPLSPrintf("%zu", v[i]);
+    }
+    return os;
+};
+
 bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress, void *)
 {
     // ----------------------------------------------------------------------
@@ -51,11 +66,21 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress, void *)
 
     auto poSrcDS = m_inputDataset.GetDatasetRef();
     CPLAssert(poSrcDS);
-    auto poRootGroup = poSrcDS->GetRootGroup();
-    CPLDebug("get-refs", "input: %s, root group: %s", poSrcDS->GetDescription(),
-             poRootGroup ? "present" : "NULL");
+
     // A2. GetRootGroup(). Null root => driver lacks mdim support => fail with a
     //     clear CPLError, return false.
+    auto poRootGroup = poSrcDS->GetRootGroup();
+    CPLDebug("MDIM-GET-REFS", "input: %s, root group: %s",
+             poSrcDS->GetDescription(), poRootGroup ? "present" : "NULL");
+
+    if (!poRootGroup)
+    {
+        ReportError(CE_Failure, CPLE_AppDefined,
+                    "Dataset %s has no root group (not multidimensional?)",
+                    poSrcDS->GetDescription());
+        return false;
+    }
+
     // A3. Resolve m_array against the root group. m_array is REQUIRED at
     //     Stage 1 (single-array contract). Support both a bare name and a
     //     '/'-prefixed full path — the HDF5 probe hit a deeply nested array
@@ -67,13 +92,26 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress, void *)
     //     piece of mdim plumbing the eventual whole-dataset traversal (deferred
     //     past Stage 1) will loop over — and the eventual classic-API widening
     //     will want a sibling of. Keep it in get_refs_common, owned here, not
-    //     pushed to gcore.
+    //     pushed to gcore
+    auto poArray = poRootGroup->OpenMDArrayFromFullname(m_array);
+    if (!poArray)
+    {
+        ReportError(CE_Failure, CPLE_AppDefined,
+                    "Cannot find array %s in dataset %s. \n"
+                    "Use 'gdal mdim info %s' to list available arrays.",
+                    m_array.c_str(), poSrcDS->GetDescription(),
+                    poSrcDS->GetDescription());
+        return false;
+    }
 
     // ----------------------------------------------------------------------
     // STAGE B — describe the array (these facts become LAYER METADATA, not
     //           per-feature columns — evidence log Q4 + companion notes)
     // ----------------------------------------------------------------------
     // B1. GetDimensions() -> count, per-dim name + size.
+    const std::vector<std::shared_ptr<GDALDimension>> apoDims =
+        poArray->GetDimensions();
+
     // B2. GetBlockSize() -> per-dim block extent.
     // B3. GUARD: any block extent == 0 => array is not chunk-enumerable. This
     //     is a VALID declined state (mosaic-VRT synthesised coord arrays report
@@ -81,9 +119,28 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress, void *)
     //     Stage 1 / single-array, declining cleanly == fail with a clear
     //     message ("array X has no natural block size, not chunk-enumerable").
     //     When whole-dataset traversal arrives this becomes skip-with-warning.
+    const auto anBlockSize = poArray->GetBlockSize();
+    CPLAssert(anBlockSize.size() == poArray->GetDimensionCount());
+    for (size_t i = 0; i < anBlockSize.size(); ++i)
+    {
+        if (anBlockSize[i] == 0)
+        {
+            ReportError(CE_Failure, CPLE_AppDefined,
+                        "Array %s has no natural block size on dimension %zu; "
+                        "not chunk-enumerable",
+                        m_array.c_str(), i);
+            return false;
+        }
+    }
+
     // B4. dtype: GetDataType(). C++ accessor still to confirm in
     //     gdal_multidim.h — the GetNumericDataType() route, NOT GetName()
     //     (empty for numerics). Low risk, not on the enumeration path.
+
+    const auto &dt = poArray->GetDataType();
+    GDALDataType nDataType = dt.GetNumericDataType();
+    const char *dt_name = GDALGetDataTypeName(nDataType);
+
     // B5. Hold these; they are written onto the OGRLayer via SetMetadataItem
     //     in Stage D. The codec chain in particular is array-level — it does
     //     NOT go in every row.
@@ -102,28 +159,180 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress, void *)
     //     the ceil arithmetic is right every generated coord is valid; if it's
     //     wrong GDAL fails loudly rather than corrupting. Trust that.
 
+    std::vector<size_t> n_chunks(anBlockSize.size());
+    CPLString osChunks;  // just for debug feedback
+
+    for (size_t iDim = 0; iDim < anBlockSize.size(); ++iDim)
+    {
+        auto &poDim = apoDims[iDim];
+        n_chunks[iDim] =
+            (poDim->GetSize() + anBlockSize[iDim] - 1) / anBlockSize[iDim];
+        if (iDim > 0)
+            osChunks += ", ";
+        osChunks += CPLSPrintf("%zu", n_chunks[iDim]);
+    }
+
+    std::vector<size_t> anDimSize(apoDims.size());
+    for (size_t i = 0; i < apoDims.size(); ++i)
+        anDimSize[i] = apoDims[i]->GetSize();
+
+    size_t nTotalChunks = 1;
+    for (auto n : n_chunks)
+        nTotalChunks *= n;
+
+    CPLDebug(
+        "MDIM-GET-REFS",
+        "array %s: dims=[%s], blocks=[%s], chunks=[%s], total=%zu, dtype=%s",
+        m_array.c_str(), FormatVec(anDimSize).c_str(),
+        FormatVec(std::vector<size_t>(anBlockSize.begin(), anBlockSize.end()))
+            .c_str(),
+        FormatVec(n_chunks).c_str(), nTotalChunks, dt_name);
+
     // ----------------------------------------------------------------------
-    // STAGE D — create the output layer + field schema
+    // STAGE D — create the output dataset + layer + field schema
     // ----------------------------------------------------------------------
-    // D1. Output dataset from m_outputDataset (GADV_OUTPUT semantics — see
-    //     footprint for the create-vs-update handling and how m_outputFormat
-    //     selects the driver; default "Parquet").
-    // D2. CreateLayer. Stage 1 = attribute-only, NO geometry column, NO SRS
-    //     (geometry is Stage 2/3). wkbNone geometry type.
-    // D3. Field schema (RFC section 4, Stage 1 table):
-    //       dim_0 .. dim_n : OFTInteger / OFTInteger64  (chunk coord per dim)
-    //       present        : OFTInteger, boolean subtype
-    //       path           : OFTString   (nullable)
-    //       offset         : OFTInteger64 (nullable)  <-- MUST be 64-bit:
-    //                        BRAN had a real offset > 5 GB (evidence log bonus)
-    //       size           : OFTInteger64 (nullable)
-    //       info           : OFTString   (nullable, joined codec text)
-    //     Open question carried from the RFC: whether per-row `info` survives
-    //     once it's also hoisted to layer metadata. Keep it for Stage 1;
-    //     decide later. Don't pre-resolve the open question in code.
-    // D4. SetMetadataItem the array-level facts from Stage B onto the layer:
-    //     dim names/sizes, block shape, dtype, and the codec chain (papszInfo
-    //     joined / hoisted). This is the authoritative copy of the codec info.
+    // D1. Output path is what the user typed; the framework parsed and
+    //     validated it but did not create the dataset (GADV_NAME | GADV_OBJECT
+    //     stores intent, creation is RunImpl's job).
+    const std::string osOutputPath = m_outputDataset.GetName();
+
+    // D2. Driver lookup. m_outputFormat is .SetRequired() at the constructor,
+    //     so it's guaranteed non-empty here.
+    GDALDriver *poDriver =
+        GetGDALDriverManager()->GetDriverByName(m_outputFormat.c_str());
+    if (!poDriver)
+    {
+        ReportError(CE_Failure, CPLE_AppDefined,
+                    "Cannot find vector driver '%s' for output dataset. "
+                    "Use 'gdal --formats' to list available drivers.",
+                    m_outputFormat.c_str());
+        return false;
+    }
+
+    // D3. Create the dataset. 0,0,0 = no raster bands (vector dataset).
+    //     unique_ptr so destructor calls GDALClose() and flushes to disk
+    //     on every return path, including errors below.
+    auto poDstDS = std::unique_ptr<GDALDataset>(
+        poDriver->Create(osOutputPath.c_str(), 0, 0, 0, GDT_Unknown, nullptr));
+    if (!poDstDS)
+    {
+        // GDALDriver::Create already emits a CPLError on failure;
+        // no need to add another.
+        return false;
+    }
+
+    // D4. Layer name from the array's basename — last '/'-separated segment.
+    //     For "/HDFEOS/SWATHS/MySwath/Data Fields/MyDataField" → "MyDataField".
+    //     For a bare-name array → the name itself.
+    std::string osLayerName = m_array;
+    const auto nLastSlash = osLayerName.rfind('/');
+    if (nLastSlash != std::string::npos)
+        osLayerName = osLayerName.substr(nLastSlash + 1);
+
+    // D5. CreateLayer — wkbNone, no SRS at Stage 1 (attribute-only).
+    OGRLayer *poLayer =
+        poDstDS->CreateLayer(osLayerName.c_str(), nullptr, wkbNone, nullptr);
+    if (!poLayer)
+    {
+        ReportError(CE_Failure, CPLE_AppDefined,
+                    "Cannot create layer '%s' in output dataset '%s'",
+                    osLayerName.c_str(), osOutputPath.c_str());
+        return false;
+    }
+
+    // D6. Per-dimension fields: dim_0, dim_1, ... as OFTInteger64
+    //     (names live in layer metadata, not field names — keeps the schema
+    //     identical-shape across arrays, sidesteps sanitization).
+    for (size_t i = 0; i < apoDims.size(); ++i)
+    {
+        OGRFieldDefn oField(CPLSPrintf("dim_%zu", i), OFTInteger64);
+        if (poLayer->CreateField(&oField) != OGRERR_NONE)
+        {
+            ReportError(CE_Failure, CPLE_AppDefined,
+                        "Cannot create field 'dim_%zu'", i);
+            return false;
+        }
+    }
+
+    // D7. Generic fields per RFC Stage 1 schema.
+    {
+        OGRFieldDefn oField("present", OFTInteger);
+        oField.SetSubType(OFSTBoolean);
+        if (poLayer->CreateField(&oField) != OGRERR_NONE)
+        {
+            ReportError(CE_Failure, CPLE_AppDefined,
+                        "Cannot create field 'present'");
+            return false;
+        }
+    }
+    {
+        OGRFieldDefn oField("path", OFTString);
+        oField.SetNullable(TRUE);
+        if (poLayer->CreateField(&oField) != OGRERR_NONE)
+        {
+            ReportError(CE_Failure, CPLE_AppDefined,
+                        "Cannot create field 'path'");
+            return false;
+        }
+    }
+    {
+        OGRFieldDefn oField("offset", OFTInteger64);
+        oField.SetNullable(TRUE);
+        if (poLayer->CreateField(&oField) != OGRERR_NONE)
+        {
+            ReportError(CE_Failure, CPLE_AppDefined,
+                        "Cannot create field 'offset'");
+            return false;
+        }
+    }
+    {
+        OGRFieldDefn oField("size", OFTInteger64);
+        oField.SetNullable(TRUE);
+        if (poLayer->CreateField(&oField) != OGRERR_NONE)
+        {
+            ReportError(CE_Failure, CPLE_AppDefined,
+                        "Cannot create field 'size'");
+            return false;
+        }
+    }
+    {
+        OGRFieldDefn oField("info", OFTString);
+        oField.SetNullable(TRUE);
+        if (poLayer->CreateField(&oField) != OGRERR_NONE)
+        {
+            ReportError(CE_Failure, CPLE_AppDefined,
+                        "Cannot create field 'info'");
+            return false;
+        }
+    }
+
+    // D8. Array-level metadata on the layer.
+    poLayer->SetMetadataItem("ARRAY_NAME", m_array.c_str());
+    poLayer->SetMetadataItem("DTYPE", dt_name);
+    for (size_t i = 0; i < apoDims.size(); ++i)
+    {
+        poLayer->SetMetadataItem(CPLSPrintf("DIM_%zu_NAME", i),
+                                 apoDims[i]->GetName().c_str());
+        poLayer->SetMetadataItem(
+            CPLSPrintf("DIM_%zu_SIZE", i),
+            CPLSPrintf(CPL_FRMT_GUIB,
+                       static_cast<GUIntBig>(apoDims[i]->GetSize())));
+        poLayer->SetMetadataItem(
+            CPLSPrintf("DIM_%zu_BLOCK", i),
+            CPLSPrintf(CPL_FRMT_GUIB, static_cast<GUIntBig>(anBlockSize[i])));
+        poLayer->SetMetadataItem(CPLSPrintf("DIM_%zu_CHUNKS", i),
+                                 CPLSPrintf("%zu", n_chunks[i]));
+    }
+
+    CPLDebug("MDIM-GET-REFS",
+             "created layer '%s' with %d fields, ready for %zu features",
+             osLayerName.c_str(), poLayer->GetLayerDefn()->GetFieldCount(),
+             nTotalChunks);
+
+    // Stage E (next): walk the chunk grid, call GetRawBlockInfo per chunk,
+    // populate one feature per chunk, CreateFeature on poLayer.
+
+    return true;  // for now — stops here cleanly, flushes the empty layer
 
     // ----------------------------------------------------------------------
     // STAGE E — enumerate the chunk grid, one feature per chunk
