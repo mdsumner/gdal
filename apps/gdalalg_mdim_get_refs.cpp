@@ -11,6 +11,7 @@
 #include "cpl_conv.h"
 #include "gdal_priv.h"
 #include "ogrsf_frmts.h"
+#include "get_refs_common.h"
 
 #ifndef _
 #define _(x) (x)
@@ -120,8 +121,10 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress, void *)
     //     message ("array X has no natural block size, not chunk-enumerable").
     //     When whole-dataset traversal arrives this becomes skip-with-warning.
     const auto anBlockSize = poArray->GetBlockSize();
+    std::vector<uint64_t> anBlockSizeU64(anBlockSize.begin(),
+                                         anBlockSize.end());
     CPLAssert(anBlockSize.size() == poArray->GetDimensionCount());
-    for (size_t i = 0; i < anBlockSize.size(); ++i)
+    for (size_t i = 0; i < anBlockSizeU64.size(); ++i)
     {
         if (anBlockSize[i] == 0)
         {
@@ -136,11 +139,6 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress, void *)
     // B4. dtype: GetDataType(). C++ accessor still to confirm in
     //     gdal_multidim.h — the GetNumericDataType() route, NOT GetName()
     //     (empty for numerics). Low risk, not on the enumeration path.
-
-    const auto &dt = poArray->GetDataType();
-    GDALDataType nDataType = dt.GetNumericDataType();
-    const char *dt_name = GDALGetDataTypeName(nDataType);
-
     // B5. Hold these; they are written onto the OGRLayer via SetMetadataItem
     //     in Stage D. The codec chain in particular is array-level — it does
     //     NOT go in every row.
@@ -159,35 +157,27 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress, void *)
     //     the ceil arithmetic is right every generated coord is valid; if it's
     //     wrong GDAL fails loudly rather than corrupting. Trust that.
 
-    std::vector<size_t> n_chunks(anBlockSize.size());
-    CPLString osChunks;  // just for debug feedback
+    const auto &dt = poArray->GetDataType();
+    GDALDataType nDataType = dt.GetNumericDataType();
+    const char *dt_name = GDALGetDataTypeName(nDataType);
 
-    for (size_t iDim = 0; iDim < anBlockSize.size(); ++iDim)
-    {
-        auto &poDim = apoDims[iDim];
-        n_chunks[iDim] =
-            (poDim->GetSize() + anBlockSize[iDim] - 1) / anBlockSize[iDim];
-        if (iDim > 0)
-            osChunks += ", ";
-        osChunks += CPLSPrintf("%zu", n_chunks[iDim]);
-    }
-
-    std::vector<size_t> anDimSize(apoDims.size());
+    // Build the dim-size vector (needed by ComputeChunkGrid and for debug)
+    std::vector<uint64_t> anDimSize(apoDims.size());
     for (size_t i = 0; i < apoDims.size(); ++i)
         anDimSize[i] = apoDims[i]->GetSize();
 
-    size_t nTotalChunks = 1;
-    for (auto n : n_chunks)
-        nTotalChunks *= n;
+    // Stage C: chunk grid via the helper
+    std::vector<size_t> n_chunks;
+    const size_t nTotalChunks =
+        get_refs::ComputeChunkGrid(anDimSize, anBlockSizeU64, n_chunks);
 
+    // Stage C debug: one consolidated line using FormatVec on each vector
     CPLDebug(
         "MDIM-GET-REFS",
         "array %s: dims=[%s], blocks=[%s], chunks=[%s], total=%zu, dtype=%s",
         m_array.c_str(), FormatVec(anDimSize).c_str(),
-        FormatVec(std::vector<size_t>(anBlockSize.begin(), anBlockSize.end()))
-            .c_str(),
-        FormatVec(n_chunks).c_str(), nTotalChunks, dt_name);
-
+        FormatVec(anBlockSizeU64).c_str(), FormatVec(n_chunks).c_str(),
+        nTotalChunks, dt_name);
     // ----------------------------------------------------------------------
     // STAGE D — create the output dataset + layer + field schema
     // ----------------------------------------------------------------------
@@ -332,55 +322,112 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress, void *)
     // Stage E (next): walk the chunk grid, call GetRawBlockInfo per chunk,
     // populate one feature per chunk, CreateFeature on poLayer.
 
-    return true;  // for now — stops here cleanly, flushes the empty layer
+    std::vector<uint64_t> coords;  // reused, resized inside helper
+    GDALMDArrayRawBlockInfo info;  // also reused, .clear() per iteration
 
-    // ----------------------------------------------------------------------
-    // STAGE E — enumerate the chunk grid, one feature per chunk
-    // ----------------------------------------------------------------------
-    // E1. One reusable GDALMDArrayRawBlockInfo, declared OUTSIDE the loop.
-    //     It owns heap memory (pszFilename/papszInfo/pabyInlineData) — call
-    //     .clear() at the top of each iteration, or rely on the fact that
-    //     GetRawBlockInfo overwrites cleanly (CONFIRM which — clear() is the
-    //     safe assumption). Do NOT accumulate filled structs.
-    // E2. Build the uint64_t coordinate vector for this chunk (size = ndim),
-    //     pass .data() to GetRawBlockInfo(coords, info).
-    // E3. bool return false => the array declined this block. At Stage 1
-    //     single-array, surface it (clear CPLError, fail) rather than guessing.
-    // E4. Classify the three states from the REAL struct fields
-    //     (evidence log Commit 1 reconciliation):
-    //       present (file-backed): info.pszFilename != nullptr
-    //       inline               : info.pszFilename == nullptr &&
-    //                              info.pabyInlineData != nullptr
-    //       absent (sparse)      : info.pszFilename == nullptr &&
-    //                              info.pabyInlineData == nullptr
-    //     Classify inline by pabyInlineData != nullptr, NOT by nSize > 0 —
-    //     the struct's copy ctor can leave pabyInlineData NULL with nSize
-    //     non-zero on alloc failure (documented). Stage 1 doesn't read inline
-    //     bytes, but writing the check this way means Stage 1b inherits it.
-    //     NEVER use nOffset == 0 as an absence signal — 0 is a legal offset
-    //     (Zarr is one-file-per-chunk, every chunk at offset 0 — evidence
-    //     log Q2).
-    // E5. Create feature, populate:
-    //       dim_* : the chunk coordinate
-    //       present: true for file-backed AND inline; false for sparse
-    //       path/offset/size:
-    //         file-backed -> info.pszFilename, info.nOffset, info.nSize
-    //         inline      -> path/offset NULL, size = info.nSize (Stage 1
-    //                        reports size but NOT the bytes — Stage 1b adds
-    //                        an OFTBinary field for pabyInlineData)
-    //         sparse      -> path/offset/size all NULL
-    //       info  : info.papszInfo joined (CSL helper), or NULL
-    //     CreateFeature on the layer.
-    // E6. Increment progress, honour pfnProgress; check for user interrupt.
+    bool bCodecHoisted = false;
+    for (size_t iLinear = 0; iLinear < nTotalChunks; ++iLinear)
+    {
+        info.clear();
+        get_refs::LinearToCoords(iLinear, n_chunks, coords);
+        if (!poArray->GetRawBlockInfo(coords.data(), info))
+        {
+            ReportError(CE_Failure, CPLE_AppDefined,
+                        "GetRawBlockInfo failed at linear index %zu", iLinear);
+            return false;
+        }
+        if (iLinear < 3 || iLinear == nTotalChunks - 1)
+        {
+            CPLDebug("MDIM-GET-REFS",
+                     "chunk %zu coords=[%s] path=%s offset=" CPL_FRMT_GUIB
+                     " size=" CPL_FRMT_GUIB,
+                     iLinear, FormatVec(coords).c_str(),
+                     info.pszFilename ? info.pszFilename : "(null)",
+                     info.nOffset, info.nSize);
+        }
+        OGRFeature *poFeature =
+            OGRFeature::CreateFeature(poLayer->GetLayerDefn());
 
-    // ----------------------------------------------------------------------
-    // STAGE F — finalize
-    // ----------------------------------------------------------------------
-    // F1. Layer/dataset flushing: the framework's Finalize() path closes the
-    //     output dataset (see the C++ "gdal CLI from C++" note — Finalize()
-    //     is what properly closes output datasets). Confirm whether RunImpl
-    //     should explicitly flush the layer or leave it to framework Finalize.
-    // F2. return true.
+        // Per-dim coordinates: dim_0 .. dim_{n-1}
+        for (size_t i = 0; i < coords.size(); ++i)
+            poFeature->SetField(static_cast<int>(i),
+                                static_cast<GIntBig>(coords[i]));
+
+        // Three-state classification — exactly the Commit 1 reconciliation
+        const int iPresentField = static_cast<int>(coords.size());
+        const int iPathField = iPresentField + 1;
+        const int iOffsetField = iPresentField + 2;
+        const int iSizeField = iPresentField + 3;
+        const int iInfoField = iPresentField + 4;
+
+        if (info.pszFilename != nullptr)
+        {
+            // present (file-backed)
+            poFeature->SetField(iPresentField, 1);
+            poFeature->SetField(iPathField, info.pszFilename);
+            poFeature->SetField(iOffsetField,
+                                static_cast<GIntBig>(info.nOffset));
+            poFeature->SetField(iSizeField, static_cast<GIntBig>(info.nSize));
+        }
+        else if (info.pabyInlineData != nullptr)
+        {
+            // inline — Stage 1 reports size but not bytes
+            // (note: classify by pabyInlineData, not nSize > 0 — Commit 1)
+            poFeature->SetField(iPresentField, 1);
+            // path and offset left null (default state)
+            poFeature->SetField(iSizeField, static_cast<GIntBig>(info.nSize));
+        }
+        else
+        {
+            // absent (sparse)
+            poFeature->SetField(iPresentField, 0);
+            // path, offset, size all left null
+        }
+
+        // info (papszInfo joined) — applies to all three states when non-null
+        if (info.papszInfo != nullptr)
+        {
+            CPLStringList aosInfo(info.papszInfo, /* bAssign = */ false);
+            // join key=value pairs into one string for the per-row field
+            CPLString osJoined;
+            for (int i = 0; i < aosInfo.size(); ++i)
+            {
+                if (i > 0)
+                    osJoined += "; ";
+                osJoined += aosInfo[i];
+            }
+            poFeature->SetField(iInfoField, osJoined.c_str());
+        }
+
+        // Codec hoist to layer metadata on the first successful file-backed chunk.
+        // Per the design: the codec chain is array-level, not per-row authoritative.
+        // The per-row info field stays (open question in the RFC; keep for Stage 1).
+        if (!bCodecHoisted && info.papszInfo != nullptr &&
+            info.pszFilename != nullptr)
+        {
+            for (int i = 0; info.papszInfo[i] != nullptr; ++i)
+            {
+                char *pszKey = nullptr;
+                const char *pszValue =
+                    CPLParseNameValue(info.papszInfo[i], &pszKey);
+                if (pszKey && pszValue)
+                    poLayer->SetMetadataItem(
+                        CPLString().Printf("CODEC_%s", pszKey).c_str(),
+                        pszValue);
+                CPLFree(pszKey);
+            }
+            bCodecHoisted = true;
+        }
+
+        if (poLayer->CreateFeature(poFeature) != OGRERR_NONE)
+        {
+            ReportError(CE_Failure, CPLE_AppDefined,
+                        "Cannot write feature for chunk %zu", iLinear);
+            OGRFeature::DestroyFeature(poFeature);
+            return false;
+        }
+        OGRFeature::DestroyFeature(poFeature);
+    }
 
     return true;
 }
