@@ -41,6 +41,7 @@ GDALMdimGetRefsAlgorithm::GDALMdimGetRefsAlgorithm()
     AddArrayNameArg(&m_array, _("Name of the array, used to restrict the "
                                 "output to the specified array."))
         .SetRequired();
+    AddOverwriteArg(&m_overwrite);
 }
 
 // Local helper for one-line vector formatting (used in debug + later metadata).
@@ -56,7 +57,8 @@ auto FormatVec = [](const std::vector<size_t> &v) -> CPLString
     return os;
 };
 
-bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress, void *)
+bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
+                                       void *pProgressData)
 {
     // ----------------------------------------------------------------------
     // STAGE A — resolve the input array
@@ -325,6 +327,11 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress, void *)
     std::vector<uint64_t> coords;  // reused, resized inside helper
     GDALMDArrayRawBlockInfo info;  // also reused, .clear() per iteration
 
+    // Progress is reported roughly every 1% of total chunks. For small arrays
+    // (HDFEOS = 392) this is once-per-4-chunks; for large (BRAN = 94860) it is
+    // once-per-~950. Either way ~100 progress callbacks per run, regardless
+    // of array size.
+    const size_t nProgressInterval = std::max<size_t>(1, nTotalChunks / 100);
     bool bCodecHoisted = false;
     for (size_t iLinear = 0; iLinear < nTotalChunks; ++iLinear)
     {
@@ -343,7 +350,8 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress, void *)
                      " size=" CPL_FRMT_GUIB,
                      iLinear, FormatVec(coords).c_str(),
                      info.pszFilename ? info.pszFilename : "(null)",
-                     info.nOffset, info.nSize);
+                     static_cast<GUIntBig>(info.nOffset),
+                     static_cast<GUIntBig>(info.nSize));
         }
         OGRFeature *poFeature =
             OGRFeature::CreateFeature(poLayer->GetLayerDefn());
@@ -427,7 +435,26 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress, void *)
             return false;
         }
         OGRFeature::DestroyFeature(poFeature);
+
+        // Throttled progress report. pfnProgress may be null if no callback was
+        // provided. Return-false from pfnProgress means the user (or environment)
+        // has requested cancellation; treat as a clean failure.
+        if (pfnProgress && (iLinear % nProgressInterval == 0))
+        {
+            const double dfFraction = static_cast<double>(iLinear) /
+                                      static_cast<double>(nTotalChunks);
+            if (!pfnProgress(dfFraction, nullptr, pProgressData))
+            {
+                ReportError(CE_Failure, CPLE_UserInterrupt,
+                            "User interrupted at chunk %zu of %zu", iLinear,
+                            nTotalChunks);
+                return false;
+            }
+        }
     }
+    // Final progress tick — completes the bar at 100%.
+    if (pfnProgress)
+        pfnProgress(1.0, nullptr, pProgressData);
 
     return true;
 }
