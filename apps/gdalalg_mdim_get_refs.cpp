@@ -84,18 +84,6 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
         return false;
     }
 
-    // A3. Resolve m_array against the root group. m_array is REQUIRED at
-    //     Stage 1 (single-array contract). Support both a bare name and a
-    //     '/'-prefixed full path — the HDF5 probe hit a deeply nested array
-    //     (/HDFEOS/SWATHS/MySwath/Data Fields/MyDataField), so full-path
-    //     resolution is not optional. OpenMDArrayFromFullname for '/'-prefixed,
-    //     OpenMDArray from root otherwise. Null => fail clearly.
-    //
-    //     Decision: factor A3 into a helper now (resolveArray). It is the one
-    //     piece of mdim plumbing the eventual whole-dataset traversal (deferred
-    //     past Stage 1) will loop over — and the eventual classic-API widening
-    //     will want a sibling of. Keep it in get_refs_common, owned here, not
-    //     pushed to gcore
     auto poArray = poRootGroup->OpenMDArrayFromFullname(m_array);
     if (!poArray)
     {
@@ -107,21 +95,9 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
         return false;
     }
 
-    // ----------------------------------------------------------------------
-    // STAGE B — describe the array (these facts become LAYER METADATA, not
-    //           per-feature columns — evidence log Q4 + companion notes)
-    // ----------------------------------------------------------------------
-    // B1. GetDimensions() -> count, per-dim name + size.
     const std::vector<std::shared_ptr<GDALDimension>> apoDims =
         poArray->GetDimensions();
 
-    // B2. GetBlockSize() -> per-dim block extent.
-    // B3. GUARD: any block extent == 0 => array is not chunk-enumerable. This
-    //     is a VALID declined state (mosaic-VRT synthesised coord arrays report
-    //     it — evidence log Q5/bonus), NOT a divide-by-zero to crash on. At
-    //     Stage 1 / single-array, declining cleanly == fail with a clear
-    //     message ("array X has no natural block size, not chunk-enumerable").
-    //     When whole-dataset traversal arrives this becomes skip-with-warning.
     const auto anBlockSize = poArray->GetBlockSize();
     std::vector<uint64_t> anBlockSizeU64(anBlockSize.begin(),
                                          anBlockSize.end());
@@ -138,27 +114,6 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
         }
     }
 
-    // B4. dtype: GetDataType(). C++ accessor still to confirm in
-    //     gdal_multidim.h — the GetNumericDataType() route, NOT GetName()
-    //     (empty for numerics). Low risk, not on the enumeration path.
-    // B5. Hold these; they are written onto the OGRLayer via SetMetadataItem
-    //     in Stage D. The codec chain in particular is array-level — it does
-    //     NOT go in every row.
-
-    // ----------------------------------------------------------------------
-    // STAGE C — compute the chunk grid (CEIL division)
-    // ----------------------------------------------------------------------
-    // C1. n_chunks[i] = (dim_size[i] + block[i] - 1) / block[i]
-    //     CEIL, confirmed for ZARR + netCDF + HDF5, all size-corroborated
-    //     (evidence log Q1 + HDF5 addendum). Floor would silently drop every
-    //     trailing partial chunk — on the HDF5 fixture that was 140 of 392.
-    // C2. Total feature count = product(n_chunks). Compute up front so the
-    //     progress callback (pfnProgress) has a denominator.
-    // C3. No in-loop bounds paranoia needed: an out-of-range coordinate makes
-    //     GetRawBlockInfo error loudly (evidence log bonus, all 3 drivers). If
-    //     the ceil arithmetic is right every generated coord is valid; if it's
-    //     wrong GDAL fails loudly rather than corrupting. Trust that.
-
     const auto &dt = poArray->GetDataType();
     GDALDataType nDataType = dt.GetNumericDataType();
     const char *dt_name = GDALGetDataTypeName(nDataType);
@@ -173,23 +128,15 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
     const size_t nTotalChunks =
         get_refs::ComputeChunkGrid(anDimSize, anBlockSizeU64, n_chunks);
 
-    // Stage C debug: one consolidated line using FormatVec on each vector
     CPLDebug(
         "MDIM-GET-REFS",
         "array %s: dims=[%s], blocks=[%s], chunks=[%s], total=%zu, dtype=%s",
         m_array.c_str(), FormatVec(anDimSize).c_str(),
         FormatVec(anBlockSizeU64).c_str(), FormatVec(n_chunks).c_str(),
         nTotalChunks, dt_name);
-    // ----------------------------------------------------------------------
-    // STAGE D — create the output dataset + layer + field schema
-    // ----------------------------------------------------------------------
-    // D1. Output path is what the user typed; the framework parsed and
-    //     validated it but did not create the dataset (GADV_NAME | GADV_OBJECT
-    //     stores intent, creation is RunImpl's job).
+
     const std::string osOutputPath = m_outputDataset.GetName();
 
-    // D2. Driver lookup. m_outputFormat is .SetRequired() at the constructor,
-    //     so it's guaranteed non-empty here.
     GDALDriver *poDriver =
         GetGDALDriverManager()->GetDriverByName(m_outputFormat.c_str());
     if (!poDriver)
@@ -201,27 +148,18 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
         return false;
     }
 
-    // D3. Create the dataset. 0,0,0 = no raster bands (vector dataset).
-    //     unique_ptr so destructor calls GDALClose() and flushes to disk
-    //     on every return path, including errors below.
     auto poDstDS = std::unique_ptr<GDALDataset>(
         poDriver->Create(osOutputPath.c_str(), 0, 0, 0, GDT_Unknown, nullptr));
     if (!poDstDS)
     {
-        // GDALDriver::Create already emits a CPLError on failure;
-        // no need to add another.
         return false;
     }
 
-    // D4. Layer name from the array's basename — last '/'-separated segment.
-    //     For "/HDFEOS/SWATHS/MySwath/Data Fields/MyDataField" → "MyDataField".
-    //     For a bare-name array → the name itself.
     std::string osLayerName = m_array;
     const auto nLastSlash = osLayerName.rfind('/');
     if (nLastSlash != std::string::npos)
         osLayerName = osLayerName.substr(nLastSlash + 1);
 
-    // D5. CreateLayer — wkbNone, no SRS at Stage 1 (attribute-only).
     OGRLayer *poLayer =
         poDstDS->CreateLayer(osLayerName.c_str(), nullptr, wkbNone, nullptr);
     if (!poLayer)
@@ -247,55 +185,46 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
     }
 
     // D7. Generic fields per RFC Stage 1 schema.
+    OGRFieldDefn oPresentField("present", OFTInteger);
+    oPresentField.SetSubType(OFSTBoolean);
+    if (poLayer->CreateField(&oPresentField) != OGRERR_NONE)
     {
-        OGRFieldDefn oField("present", OFTInteger);
-        oField.SetSubType(OFSTBoolean);
-        if (poLayer->CreateField(&oField) != OGRERR_NONE)
-        {
-            ReportError(CE_Failure, CPLE_AppDefined,
-                        "Cannot create field 'present'");
-            return false;
-        }
+        ReportError(CE_Failure, CPLE_AppDefined,
+                    "Cannot create field 'present'");
+        return false;
     }
+
+    OGRFieldDefn oPathField("path", OFTString);
+    oPathField.SetNullable(TRUE);
+    if (poLayer->CreateField(&oPathField) != OGRERR_NONE)
     {
-        OGRFieldDefn oField("path", OFTString);
-        oField.SetNullable(TRUE);
-        if (poLayer->CreateField(&oField) != OGRERR_NONE)
-        {
-            ReportError(CE_Failure, CPLE_AppDefined,
-                        "Cannot create field 'path'");
-            return false;
-        }
+        ReportError(CE_Failure, CPLE_AppDefined, "Cannot create field 'path'");
+        return false;
     }
+
+    OGRFieldDefn oOffsetField("offset", OFTInteger64);
+    oOffsetField.SetNullable(TRUE);
+    if (poLayer->CreateField(&oOffsetField) != OGRERR_NONE)
     {
-        OGRFieldDefn oField("offset", OFTInteger64);
-        oField.SetNullable(TRUE);
-        if (poLayer->CreateField(&oField) != OGRERR_NONE)
-        {
-            ReportError(CE_Failure, CPLE_AppDefined,
-                        "Cannot create field 'offset'");
-            return false;
-        }
+        ReportError(CE_Failure, CPLE_AppDefined,
+                    "Cannot create field 'offset'");
+        return false;
     }
+
+    OGRFieldDefn oSizeField("size", OFTInteger64);
+    oSizeField.SetNullable(TRUE);
+    if (poLayer->CreateField(&oSizeField) != OGRERR_NONE)
     {
-        OGRFieldDefn oField("size", OFTInteger64);
-        oField.SetNullable(TRUE);
-        if (poLayer->CreateField(&oField) != OGRERR_NONE)
-        {
-            ReportError(CE_Failure, CPLE_AppDefined,
-                        "Cannot create field 'size'");
-            return false;
-        }
+        ReportError(CE_Failure, CPLE_AppDefined, "Cannot create field 'size'");
+        return false;
     }
+
+    OGRFieldDefn oInfoField("info", OFTString);
+    oInfoField.SetNullable(TRUE);
+    if (poLayer->CreateField(&oInfoField) != OGRERR_NONE)
     {
-        OGRFieldDefn oField("info", OFTString);
-        oField.SetNullable(TRUE);
-        if (poLayer->CreateField(&oField) != OGRERR_NONE)
-        {
-            ReportError(CE_Failure, CPLE_AppDefined,
-                        "Cannot create field 'info'");
-            return false;
-        }
+        ReportError(CE_Failure, CPLE_AppDefined, "Cannot create field 'info'");
+        return false;
     }
 
     // D8. Array-level metadata on the layer.
@@ -321,16 +250,10 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
              osLayerName.c_str(), poLayer->GetLayerDefn()->GetFieldCount(),
              nTotalChunks);
 
-    // Stage E (next): walk the chunk grid, call GetRawBlockInfo per chunk,
-    // populate one feature per chunk, CreateFeature on poLayer.
-
     std::vector<uint64_t> coords;  // reused, resized inside helper
     GDALMDArrayRawBlockInfo info;  // also reused, .clear() per iteration
 
-    // Progress is reported roughly every 1% of total chunks. For small arrays
-    // (HDFEOS = 392) this is once-per-4-chunks; for large (BRAN = 94860) it is
-    // once-per-~950. Either way ~100 progress callbacks per run, regardless
-    // of array size.
+    // Progress is reported roughly every 1% of total chunks.
     const size_t nProgressInterval = std::max<size_t>(1, nTotalChunks / 100);
     bool bCodecHoisted = false;
     for (size_t iLinear = 0; iLinear < nTotalChunks; ++iLinear)
@@ -408,8 +331,6 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
         }
 
         // Codec hoist to layer metadata on the first successful file-backed chunk.
-        // Per the design: the codec chain is array-level, not per-row authoritative.
-        // The per-row info field stays (open question in the RFC; keep for Stage 1).
         if (!bCodecHoisted && info.papszInfo != nullptr &&
             info.pszFilename != nullptr)
         {
@@ -436,9 +357,7 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
         }
         OGRFeature::DestroyFeature(poFeature);
 
-        // Throttled progress report. pfnProgress may be null if no callback was
-        // provided. Return-false from pfnProgress means the user (or environment)
-        // has requested cancellation; treat as a clean failure.
+        // progress
         if (pfnProgress && (iLinear % nProgressInterval == 0))
         {
             const double dfFraction = static_cast<double>(iLinear) /
@@ -452,7 +371,7 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
             }
         }
     }
-    // Final progress tick — completes the bar at 100%.
+    // Final progress tick
     if (pfnProgress)
         pfnProgress(1.0, nullptr, pProgressData);
 
