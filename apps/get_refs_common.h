@@ -49,7 +49,7 @@ namespace get_refs
 inline void LinearToCoords(size_t iLinear, const std::vector<size_t> &n_chunks,
                            std::vector<uint64_t> &coords)
 {
-    coords.resize(n_chunks.size());
+    CPLAssert(coords.size() == n_chunks.size());
     size_t remaining = iLinear;
     for (size_t iDim = n_chunks.size(); iDim-- > 0;)
     {
@@ -65,7 +65,8 @@ inline void LinearToCoords(size_t iLinear, const std::vector<size_t> &n_chunks,
  * Encode per-dimension chunk coordinates into a linear chunk index,
  * inverse of LinearToCoords().
  *
- * Uses Horner's method on a mixed-radix integer.
+ * Currently unused by RunImpl which only needs the decoder direction,
+ * this is the pair to LinearToCoords.
  *
  * @param coords    Per-dimension chunk coordinates. Each coords[i] must
  *                  be < n_chunks[i]; not checked.

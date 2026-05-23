@@ -250,10 +250,11 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
              osLayerName.c_str(), poLayer->GetLayerDefn()->GetFieldCount(),
              nTotalChunks);
 
-    std::vector<uint64_t> coords;  // reused, resized inside helper
-    GDALMDArrayRawBlockInfo info;  // also reused, .clear() per iteration
+    std::vector<uint64_t> coords(
+        apoDims.size());           // reused, inside LinearToCoords
+    GDALMDArrayRawBlockInfo info;  // reused, .clear() per iteration
 
-    // Progress is reported roughly every 1% of total chunks.
+    // Loop over chunks
     const size_t nProgressInterval = std::max<size_t>(1, nTotalChunks / 100);
     bool bCodecHoisted = false;
     for (size_t iLinear = 0; iLinear < nTotalChunks; ++iLinear)
