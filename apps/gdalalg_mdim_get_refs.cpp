@@ -250,10 +250,16 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
              osLayerName.c_str(), poLayer->GetLayerDefn()->GetFieldCount(),
              nTotalChunks);
 
+    // Fast path: bulk chunk info (HDF5 via H5Dchunk_iter, others fall back to loop)
+    std::vector<GDALMDArrayRawBlockInfo> aoAllInfo;
+    if (poArray->GetAllRawBlockInfo(aoAllInfo))
+        return true;
+
+    CPLDebug("MDIM-GET-REFS", "fast path not taken");
+
     std::vector<uint64_t> coords(
         apoDims.size());           // reused, inside LinearToCoords
     GDALMDArrayRawBlockInfo info;  // reused, .clear() per iteration
-
     // Loop over chunks
     const size_t nProgressInterval = std::max<size_t>(1, nTotalChunks / 100);
     bool bCodecHoisted = false;

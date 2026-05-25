@@ -400,6 +400,8 @@ class HDF5Array final : public GDALMDArray
 
     bool GetRawBlockInfo(const uint64_t *panBlockCoordinates,
                          GDALMDArrayRawBlockInfo &info) const override;
+    bool GetAllRawBlockInfo(
+        std::vector<GDALMDArrayRawBlockInfo> &aoBlockInfo) const override;
 };
 
 /************************************************************************/
@@ -1994,6 +1996,103 @@ bool HDF5Array::GetRawBlockInfo(const uint64_t *panBlockCoordinates,
     return true;
 #else
     CPLDebug("HDF5", "H5Dget_chunk_info() only available in HDF5 >= 1.10.5");
+    return false;
+#endif
+}
+
+struct HDF5ChunkIterData
+{
+    int nRank = 0;
+    std::string osFilename{};
+    std::vector<hsize_t> anOffsets{};
+    std::vector<unsigned> anFilterMasks{};
+    std::vector<haddr_t> anAddrs{};
+    std::vector<uint32_t> anSizes{};
+    hsize_t userBlockOffset = 0;
+};
+
+static herr_t ChunkIterCallback(const hsize_t *offset, unsigned filter_mask,
+                                haddr_t addr,
+                                hsize_t size,  // not uint32_t
+                                void *op_data)
+{
+    auto *b = static_cast<HDF5ChunkIterData *>(op_data);
+    for (int i = 0; i < b->nRank; ++i)
+        b->anOffsets.push_back(offset[i]);
+    b->anFilterMasks.push_back(filter_mask);
+    b->anAddrs.push_back(addr);
+    b->anSizes.push_back(static_cast<hsize_t>(size));
+    return H5_ITER_CONT;
+}
+
+bool HDF5Array::GetAllRawBlockInfo(
+    std::vector<GDALMDArrayRawBlockInfo> &aoBlockInfo) const
+{
+    aoBlockInfo.clear();
+
+#if (defined(H5_VERS_MAJOR) &&                                                 \
+     (H5_VERS_MAJOR >= 2 || (H5_VERS_MAJOR == 1 && H5_VERS_MINOR > 10) ||      \
+      (H5_VERS_MAJOR == 1 && H5_VERS_MINOR == 10 && H5_VERS_RELEASE >= 5)))
+
+    const auto anBlockSize = GetBlockSize();
+    if (anBlockSize.empty() || anBlockSize[0] == 0)
+    {
+        // Contiguous/compact: single block, delegate to GetRawBlockInfo
+        std::vector<uint64_t> zeros(m_dims.size(), 0);
+        GDALMDArrayRawBlockInfo info;
+        if (!GetRawBlockInfo(zeros.data(), info))
+            return false;
+        aoBlockInfo.push_back(std::move(info));
+        return true;
+    }
+
+    HDF5ChunkIterData buf;
+    buf.nRank = static_cast<int>(GetDimensionCount());
+    buf.osFilename = m_poShared->GetFilename();
+
+    // Resolve userblock offset once
+    //#if !(/* < 1.14.4 guard */)
+    const hid_t nListId = H5Fget_create_plist(m_poShared->GetHDF5());
+    if (nListId > 0)
+    {
+        hsize_t nUserBlockSize = 0;
+        H5Pget_userblock(nListId, &nUserBlockSize);
+        buf.userBlockOffset = nUserBlockSize;
+        H5Pclose(nListId);
+    }
+    //#endif
+
+    HDF5_GLOBAL_LOCK();
+    const herr_t herr =
+        H5Dchunk_iter(m_hArray, H5P_DEFAULT, ChunkIterCallback, &buf);
+    if (herr < 0)
+    {
+        CPLError(CE_Failure, CPLE_AppDefined,
+                 "GetAllRawBlockInfo(): H5Dchunk_iter() failed for array %s",
+                 GetName().c_str());
+        return false;
+    }
+
+    const hsize_t nChunks = buf.anSizes.size();
+    aoBlockInfo.reserve(nChunks);
+
+    for (hsize_t k = 0; k < nChunks; ++k)
+    {
+        GDALMDArrayRawBlockInfo info;
+        info.pszFilename = CPLStrdup(buf.osFilename.c_str());
+        info.nOffset = (buf.anAddrs[k] == HADDR_UNDEF ? 0 : buf.anAddrs[k]) +
+                       buf.userBlockOffset;
+        info.nSize = buf.anSizes[k];
+        info.papszInfo =
+            GetFilterInfo(m_hArray, buf.anFilterMasks[k]).StealList();
+        // AddExtraInfo equivalent — endianness is array-level, set once
+        // and could be hoisted out of the loop if needed
+        aoBlockInfo.push_back(std::move(info));
+    }
+    return true;
+
+#else
+    CPLDebug("HDF5", "H5Dchunk_iter() requires HDF5 >= 1.10.5");
     return false;
 #endif
 }

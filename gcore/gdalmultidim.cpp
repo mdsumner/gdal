@@ -15234,6 +15234,13 @@ GDALMDArrayRawBlockInfo::operator=(GDALMDArrayRawBlockInfo &&other)
 
 //! @endcond
 
+bool GDALMDArray::GetAllRawBlockInfo(
+    std::vector<GDALMDArrayRawBlockInfo> &aoBlockInfo) const
+{
+    aoBlockInfo.clear();
+    return false;
+}
+
 /************************************************************************/
 /*                       GDALMDArray::GetRawBlockInfo()                 */
 /************************************************************************/
