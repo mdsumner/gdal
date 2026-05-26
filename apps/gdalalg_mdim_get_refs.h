@@ -30,7 +30,7 @@ class GDALMdimGetRefsAlgorithm final : public GDALAlgorithm
         "vector/table layer.";
     static constexpr const char *HELP_URL = "/programs/gdal_mdim_get_refs.html";
 
-    GDALMdimGetRefsAlgorithm();
+    explicit GDALMdimGetRefsAlgorithm();
 
   private:
     bool RunImpl(GDALProgressFunc pfnProgress, void *pProgressData) override;

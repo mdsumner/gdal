@@ -1,11 +1,14 @@
 /******************************************************************************
- * RunImpl structural sketch — gdal mdim get-refs, Stage 1
  *
- * NOT finished code. A stage-by-stage skeleton showing where the seams fall.
- * Every non-obvious choice is tagged with the evidence-log finding behind it.
- * Fill in against gdalalg_raster_footprint.cpp (layer building) and
- * gdalalg_mdim_info.cpp / gdalalg_mdim_convert.cpp (mdim open + array resolve).
- ******************************************************************************/
+ * Project:  GDAL
+ * Purpose:  gdal "mdim get-refs" subcommand
+ * Author:   Michael Sumner <mdsumner at gmail.com>
+ *
+ ******************************************************************************
+ * Copyright (c) 2026, Michael Sumner <mdsumner at gmail.com>
+ *
+ * SPDX-License-Identifier: MIT
+ ****************************************************************************/
 
 #include "gdalalg_mdim_get_refs.h"
 #include "cpl_conv.h"
@@ -13,9 +16,30 @@
 #include "ogrsf_frmts.h"
 #include "get_refs_common.h"
 
+//! @cond Doxygen_Suppress
+
 #ifndef _
 #define _(x) (x)
 #endif
+
+namespace
+{
+
+// Format a vector of integers as "[a, b, c]" for debug messages.
+std::string FormatVec(const std::vector<uint64_t> &v)
+{
+    std::string s = "[";
+    for (size_t i = 0; i < v.size(); ++i)
+    {
+        if (i > 0)
+            s += ", ";
+        s += std::to_string(v[i]);
+    }
+    s += "]";
+    return s;
+}
+
+}  // namespace
 
 /************************************************************************/
 /*                        GDALMdimGetRefsAlgorithm()                  */
@@ -43,19 +67,6 @@ GDALMdimGetRefsAlgorithm::GDALMdimGetRefsAlgorithm()
         .SetRequired();
     AddOverwriteArg(&m_overwrite);
 }
-
-// Local helper for one-line vector formatting (used in debug + later metadata).
-auto FormatVec = [](const std::vector<size_t> &v) -> CPLString
-{
-    CPLString os;
-    for (size_t i = 0; i < v.size(); ++i)
-    {
-        if (i > 0)
-            os += ", ";
-        os += CPLSPrintf("%zu", v[i]);
-    }
-    return os;
-};
 
 bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
                                        void *pProgressData)
@@ -376,5 +387,9 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
     if (pfnProgress)
         pfnProgress(1.0, nullptr, pProgressData);
 
+    m_outputDataset.Set(std::move(poDstDS));
+
     return true;
 }
+
+//! @cond Doxygen_Suppress
