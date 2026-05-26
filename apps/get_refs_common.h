@@ -44,7 +44,7 @@ namespace get_refs
  *                 internal range check (this is on the hot path).
  * @param n_chunks Per-dimension chunk count. Must be non-empty and have
  *                 no zero entries.
- * @param coords   Output buffer; resized to n_chunks.size() and filled.
+ * @param coords   Output buffer; checked to match size of n_chunks, and filled.
  */
 inline void LinearToCoords(size_t iLinear, const std::vector<size_t> &n_chunks,
                            std::vector<uint64_t> &coords)
