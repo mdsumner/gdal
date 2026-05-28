@@ -42,6 +42,7 @@ class GDALMdimGetRefsAlgorithm final : public GDALAlgorithm
     std::string m_array{};
     GDALArgDatasetValue m_outputDataset{};
     bool m_overwrite = false;
+    std::vector<std::string> m_creationOptions{};
 };
 
 //! @endcond

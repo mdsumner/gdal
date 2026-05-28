@@ -14,7 +14,7 @@
 #include "cpl_conv.h"
 #include "gdal_priv.h"
 #include "ogrsf_frmts.h"
-#include "get_refs_common.h"
+#include "gdalalg_mdim_get_refs_common.h"
 
 //! @cond Doxygen_Suppress
 
@@ -66,6 +66,7 @@ GDALMdimGetRefsAlgorithm::GDALMdimGetRefsAlgorithm()
                                 "output to the specified array."))
         .SetRequired();
     AddOverwriteArg(&m_overwrite);
+    AddCreationOptionsArg(&m_creationOptions);
 }
 
 bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
@@ -127,6 +128,14 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
 
     const auto &dt = poArray->GetDataType();
     GDALDataType nDataType = dt.GetNumericDataType();
+    if (nDataType == GDT_Unknown)
+    {
+        ReportError(
+            CE_Failure, CPLE_AppDefined,
+            "Array %s has non-numeric or unknown data type; not supported",
+            m_array.c_str());
+        return false;
+    }
     const char *dt_name = GDALGetDataTypeName(nDataType);
 
     // Build the dim-size vector (needed by ComputeChunkGrid and for debug)
@@ -160,7 +169,8 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
     }
 
     auto poDstDS = std::unique_ptr<GDALDataset>(
-        poDriver->Create(osOutputPath.c_str(), 0, 0, 0, GDT_Unknown, nullptr));
+        poDriver->Create(osOutputPath.c_str(), 0, 0, 0, GDT_Unknown,
+                         CPLStringList(m_creationOptions).List()));
     if (!poDstDS)
     {
         return false;
@@ -330,14 +340,12 @@ bool GDALMdimGetRefsAlgorithm::RunImpl(GDALProgressFunc pfnProgress,
         // info (papszInfo joined) — applies to all three states when non-null
         if (info.papszInfo != nullptr)
         {
-            CPLStringList aosInfo(info.papszInfo, /* bAssign = */ false);
-            // join key=value pairs into one string for the per-row field
             CPLString osJoined;
-            for (int i = 0; i < aosInfo.size(); ++i)
+            for (int i = 0; info.papszInfo[i] != nullptr; ++i)
             {
                 if (i > 0)
                     osJoined += "; ";
-                osJoined += aosInfo[i];
+                osJoined += info.papszInfo[i];
             }
             poFeature->SetField(iInfoField, osJoined.c_str());
         }

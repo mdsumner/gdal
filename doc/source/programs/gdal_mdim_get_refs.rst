@@ -29,9 +29,7 @@ records the chunk's coordinates within the array's chunk grid, the location
 of the chunk's backing storage (file path, byte offset, and byte size), and
 any per-chunk metadata reported by the driver.
 
-The output is an attribute-only vector layer (no geometry) suitable for
-direct consumption by SQL tools, columnar query engines (when written as
-Parquet), or any OGR-compatible reader.
+The output is an attribute-only vector layer (no geometry).
 
 The algorithm is format-general: it relies on the multidimensional
 ``GetRawBlockInfo()``.
@@ -49,8 +47,7 @@ field of the output layer:
   the array's fill value.
 * **Inline** (``present=1``, ``path``/``offset`` NULL, ``size`` populated):
   the chunk data is small enough to be embedded in the storage metadata
-  rather than referenced as bytes. (Stage 1 records the size but does not
-  emit the inline payload.)
+  rather than referenced as bytes. (Not yet implemented.)
 
 Schema
 ------
@@ -81,7 +78,8 @@ The output layer's schema is determined by the input array's rank:
      - Integer64, nullable
      - For file-backed present chunks, the byte offset within the file
        where the chunk's raw bytes start. For native Zarr (one file per
-       chunk), this is typically 0. NULL for absent and inline chunks.
+       chunk), this is typically 0. NULL for absent and inline chunks. Note
+       that ``offset`` is a SQL reserved word and must be quoted in queries.
    * - ``size``
      - Integer64, nullable
      - For present chunks, the number of bytes of raw chunk storage.
@@ -107,24 +105,14 @@ The output layer carries the following metadata items, accessible via
 * ``CODEC_*`` — array-level codec metadata hoisted from the first chunk
   (e.g. ``CODEC_COMPRESSION=DEFLATE``, ``CODEC_FILTER=SHUFFLE``)
 
-SQL consumption
-~~~~~~~~~~~~~~~
-
-The chosen schema preserves predicate pushdown for Parquet consumers. The
-per-dimension integer columns allow range queries on chunk coordinates to
-benefit from Parquet's row-group skipping. Note that ``offset`` is a SQL
-reserved word and must be quoted in standard SQL queries: ``"offset"``.
-
 Limitations
 -----------
 
 * Only a single array can be emitted (``--array`` is required).
-* Arrays without natural block size (contiguous storage, classic netCDF,
-  synthesised coordinate arrays from VRT mosaics) decline cleanly with a
-  ``not chunk-enumerable`` error.
-* The inline data payload (for chunks small enough to be embedded in
-  storage metadata) is not extracted as a binary field.
+* Arrays without natural block size decline with a ``not chunk-enumerable`` error.
+* The inline data payload is not extracted as a binary field.
 * No geometry column is emitted.
+* ``GetRawBlockInfo()`` iterates chunks and this can be slow especially for remote sources.
 
 Options
 -------
