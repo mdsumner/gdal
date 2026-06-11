@@ -17,6 +17,66 @@
 
 //! @cond Doxygen_Suppress
 
+/************************************************************************/
+/*                           LinearToCoords()                           */
+/************************************************************************/
+/**
+ * Decode a linear chunk index into per-dimension chunk coordinates,
+ * using row-major (last dimension varies fastest) ordering.
+ *
+ * Given a chunk grid of shape n_chunks = [N_0, N_1, ..., N_{k-1}] and a
+ * linear index iLinear in [0, product(n_chunks)), this fills coords with
+ * the [c_0, c_1, ..., c_{k-1}] such that
+ *     iLinear = (((c_0 * N_1) + c_1) * N_2 + c_2) * ... + c_{k-1}.
+ *
+ * The method is templated to handle variations at the caller.
+ *
+ * @param iLinear  The flat chunk index. Must be < product(n_chunks);
+ *                 callers should bound this with nTotalChunks. No
+ *                 internal range check done.
+ * @param n_chunks Per-dimension chunk count. Must be non-empty and have
+ *                 no zero entries.
+ * @param coords   Output buffer; checked to match size of n_chunks, and filled.
+ */
+template <class T>
+void LinearToCoords(T iLinear, const std::vector<T> &n_chunks,
+                    const std::vector<T> &coords)
+{
+    CPLAssert(coords.size() == n_chunks.size());
+    uint64_t remaining = iLinear;
+    for (size_t i = nDims; i > 0;)
+    {
+        --i;
+        coords[i] = iLinear % n_chunks[i];
+        iLinear /= n_chunks[i];
+    }
+}
+
+/************************************************************************/
+/*                           CoordsToLinear()                           */
+/************************************************************************/
+/**
+ * Encode per-dimension chunk coordinates into a linear chunk index,
+ * inverse of LinearToCoords().
+ *
+ * @param coords    Per-dimension chunk coordinates. Each coords[i] must
+ *                  be < n_chunks[i]; not checked.
+ * @param n_chunks  Per-dimension chunk count. Same size as coords.
+ * @return          The linear index in [0, product(n_chunks)).
+ */
+template <class T>
+uint64_t CoordsToLinear(const std::vector<T> &coords,
+                        const std::vector<T> &n_chunks)
+{
+    CPLAssert(coords.size() == n_chunks.size());
+    uint64_t iLinear = 0;
+    for (uint64_t iDim = 0; iDim < n_chunks.size(); ++iDim)
+    {
+        iLinear = iLinear * n_chunks[iDim] + coords[iDim];
+    }
+    return iLinear;
+}
+
 // For C API
 
 struct GDALExtendedDataTypeHS
